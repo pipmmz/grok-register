@@ -62,6 +62,7 @@ DEFAULT_CONFIG = {
     "email_provider": "duckmail",
     "yyds_api_key": "",
     "yyds_jwt": "",
+    "yyds_domain": "",
     "defaultDomains": "",
 }
 

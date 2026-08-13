@@ -728,16 +728,24 @@ class GrokRegisterGUI:
         config_frame.grid_columnconfigure(1, weight=1, minsize=260)
         config_frame.grid_columnconfigure(3, weight=1, minsize=260)
 
-        def add_label(row, column, text):
-            tk_label(config_frame, text=text, bg=UI_PANEL_BG).grid(
+        def add_label(row, column, text, provider=None):
+            w = tk_label(config_frame, text=text, bg=UI_PANEL_BG)
+            w.grid(
                 row=row,
                 column=column,
                 sticky=tk.W,
                 padx=(0, 6),
                 pady=3,
             )
+            w._grid_row = row
+            w._grid_column = column
+            w._grid_columnspan = 1
+            w._grid_sticky = tk.W
+            if provider is not None:
+                provider.append(w)
+            return w
 
-        def add_field(widget, row, column, columnspan=1, sticky=tk.EW):
+        def add_field(widget, row, column, columnspan=1, sticky=tk.EW, provider=None):
             widget.grid(
                 row=row,
                 column=column,
@@ -746,11 +754,25 @@ class GrokRegisterGUI:
                 padx=(0, 14),
                 pady=3,
             )
+            widget._grid_row = row
+            widget._grid_column = column
+            widget._grid_columnspan = columnspan
+            widget._grid_sticky = sticky
+            if provider is not None:
+                provider.append(widget)
+            return widget
 
         add_label(0, 0, "邮箱服务商:")
         self.email_provider_var = tk.StringVar(value=config.get("email_provider", "duckmail"))
         self.email_provider_combo = tk_option_menu(config_frame, self.email_provider_var, ["duckmail", "yyds", "cloudflare", "cloudmail"], width=12)
         add_field(self.email_provider_combo, 0, 1, sticky=tk.W)
+
+        # 记录每个邮箱服务商专属的控件，切换服务商时隐藏无关项。
+        self._duck_widgets = []
+        self._yyds_widgets = []
+        self._cf_widgets = []
+        self._cloudmail_widgets = []
+        self.email_provider_var.trace_add("write", self._on_provider_change)
 
         add_label(0, 2, "注册数量:")
         self.count_var = tk.StringVar(value=str(config.get("register_count", 1)))
@@ -780,29 +802,44 @@ class GrokRegisterGUI:
         self.proxy_entry = tk_entry(config_frame, textvariable=self.proxy_var, width=34)
         add_field(self.proxy_entry, 1, 3)
 
-        add_label(2, 0, "DuckMail API Key:")
+        add_label(2, 0, "DuckMail API Key:", provider=self._duck_widgets)
         self.api_key_var = tk.StringVar(value=config.get("duckmail_api_key", ""))
         self.api_key_entry = tk_entry(config_frame, textvariable=self.api_key_var, width=34)
-        add_field(self.api_key_entry, 2, 1)
+        add_field(self.api_key_entry, 2, 1, provider=self._duck_widgets)
 
-        add_label(2, 2, "Cloudflare 鉴权模式:")
+        add_label(2, 2, "YYDS API Key:", provider=self._yyds_widgets)
+        self.yyds_api_key_var = tk.StringVar(value=config.get("yyds_api_key", ""))
+        self.yyds_api_key_entry = tk_entry(config_frame, textvariable=self.yyds_api_key_var, width=34)
+        add_field(self.yyds_api_key_entry, 2, 3, provider=self._yyds_widgets)
+
+        add_label(3, 0, "YYDS JWT:", provider=self._yyds_widgets)
+        self.yyds_jwt_var = tk.StringVar(value=config.get("yyds_jwt", ""))
+        self.yyds_jwt_entry = tk_entry(config_frame, textvariable=self.yyds_jwt_var, width=34)
+        add_field(self.yyds_jwt_entry, 3, 1, provider=self._yyds_widgets)
+
+        add_label(3, 2, "YYDS 域名(留空自动):", provider=self._yyds_widgets)
+        self.yyds_domain_var = tk.StringVar(value=config.get("yyds_domain", ""))
+        self.yyds_domain_entry = tk_entry(config_frame, textvariable=self.yyds_domain_var, width=34)
+        add_field(self.yyds_domain_entry, 3, 3, provider=self._yyds_widgets)
+
+        add_label(4, 0, "Cloudflare 鉴权模式:", provider=self._cf_widgets)
         self.cloudflare_auth_mode_var = tk.StringVar(value=config.get("cloudflare_auth_mode", "none"))
         self.cloudflare_auth_mode_combo = tk_option_menu(
             config_frame, self.cloudflare_auth_mode_var, ["query-key", "bearer", "x-api-key", "x-admin-auth", "none"], width=12
         )
-        add_field(self.cloudflare_auth_mode_combo, 2, 3, sticky=tk.W)
+        add_field(self.cloudflare_auth_mode_combo, 4, 3, sticky=tk.W, provider=self._cf_widgets)
 
-        add_label(3, 0, "Cloudflare API Base:")
+        add_label(5, 0, "Cloudflare API Base:", provider=self._cf_widgets)
         self.cloudflare_api_base_var = tk.StringVar(value=config.get("cloudflare_api_base", ""))
         self.cloudflare_api_base_entry = tk_entry(config_frame, textvariable=self.cloudflare_api_base_var, width=72)
-        add_field(self.cloudflare_api_base_entry, 3, 1, columnspan=3)
+        add_field(self.cloudflare_api_base_entry, 5, 1, columnspan=3, provider=self._cf_widgets)
 
-        add_label(4, 0, "Cloudflare API Key:")
+        add_label(6, 0, "Cloudflare API Key:", provider=self._cf_widgets)
         self.cloudflare_api_key_var = tk.StringVar(value=config.get("cloudflare_api_key", ""))
         self.cloudflare_api_key_entry = tk_entry(config_frame, textvariable=self.cloudflare_api_key_var, width=34)
-        add_field(self.cloudflare_api_key_entry, 4, 1)
+        add_field(self.cloudflare_api_key_entry, 6, 1, provider=self._cf_widgets)
 
-        add_label(4, 2, "CF 路径:")
+        add_label(6, 2, "CF 路径:", provider=self._cf_widgets)
         self.cloudflare_paths_var = tk.StringVar(
             value=",".join(
                 [
@@ -814,76 +851,76 @@ class GrokRegisterGUI:
             )
         )
         self.cloudflare_paths_entry = tk_entry(config_frame, textvariable=self.cloudflare_paths_var, width=34)
-        add_field(self.cloudflare_paths_entry, 4, 3)
+        add_field(self.cloudflare_paths_entry, 6, 3, provider=self._cf_widgets)
 
-        add_label(5, 0, "Cloud Mail API Base:")
+        add_label(7, 0, "Cloud Mail API Base:", provider=self._cloudmail_widgets)
         self.cloudmail_api_base_var = tk.StringVar(value=config.get("cloudmail_api_base", ""))
         self.cloudmail_api_base_entry = tk_entry(config_frame, textvariable=self.cloudmail_api_base_var, width=34)
-        add_field(self.cloudmail_api_base_entry, 5, 1)
+        add_field(self.cloudmail_api_base_entry, 7, 1, provider=self._cloudmail_widgets)
 
-        add_label(5, 2, "Cloud Mail 域名:")
+        add_label(7, 2, "Cloud Mail 域名:", provider=self._cloudmail_widgets)
         self.cloudmail_domains_var = tk.StringVar(value=config.get("cloudmail_domains", ""))
         self.cloudmail_domains_entry = tk_entry(config_frame, textvariable=self.cloudmail_domains_var, width=34)
-        add_field(self.cloudmail_domains_entry, 5, 3)
+        add_field(self.cloudmail_domains_entry, 7, 3, provider=self._cloudmail_widgets)
 
-        add_label(6, 0, "Cloud Mail Public Token:")
+        add_label(8, 0, "Cloud Mail Public Token:", provider=self._cloudmail_widgets)
         self.cloudmail_public_token_var = tk.StringVar(value=config.get("cloudmail_public_token", ""))
         self.cloudmail_public_token_entry = tk_entry(config_frame, textvariable=self.cloudmail_public_token_var, width=72)
-        add_field(self.cloudmail_public_token_entry, 6, 1, columnspan=3)
+        add_field(self.cloudmail_public_token_entry, 8, 1, columnspan=3, provider=self._cloudmail_widgets)
 
-        add_label(7, 0, "grok2api 本地入池:")
+        add_label(9, 0, "grok2api 本地入池:")
         self.grok2api_local_auto_var = tk.BooleanVar(value=bool(config.get("grok2api_auto_add_local", True)))
         self.grok2api_local_auto_check = tk_checkbutton(config_frame, variable=self.grok2api_local_auto_var)
-        add_field(self.grok2api_local_auto_check, 7, 1, sticky=tk.W)
+        add_field(self.grok2api_local_auto_check, 9, 1, sticky=tk.W)
 
-        add_label(7, 2, "grok2api 池名:")
+        add_label(9, 2, "grok2api 池名:")
         self.grok2api_pool_name_var = tk.StringVar(value=str(config.get("grok2api_pool_name", "ssoBasic")))
         self.grok2api_pool_name_combo = tk_option_menu(
             config_frame, self.grok2api_pool_name_var, ["ssoBasic", "ssoSuper"], width=12
         )
-        add_field(self.grok2api_pool_name_combo, 7, 3, sticky=tk.W)
+        add_field(self.grok2api_pool_name_combo, 9, 3, sticky=tk.W)
 
-        add_label(8, 0, "本地 token.json:")
+        add_label(10, 0, "本地 token.json:")
         self.grok2api_local_file_var = tk.StringVar(value=str(config.get("grok2api_local_token_file", "")))
         self.grok2api_local_file_entry = tk_entry(config_frame, textvariable=self.grok2api_local_file_var, width=72)
-        add_field(self.grok2api_local_file_entry, 8, 1, columnspan=3)
+        add_field(self.grok2api_local_file_entry, 10, 1, columnspan=3)
 
-        add_label(9, 0, "grok2api 远端入池:")
+        add_label(11, 0, "grok2api 远端入池:")
         self.grok2api_remote_auto_var = tk.BooleanVar(value=bool(config.get("grok2api_auto_add_remote", False)))
         self.grok2api_remote_auto_check = tk_checkbutton(config_frame, variable=self.grok2api_remote_auto_var)
-        add_field(self.grok2api_remote_auto_check, 9, 1, sticky=tk.W)
+        add_field(self.grok2api_remote_auto_check, 11, 1, sticky=tk.W)
 
-        add_label(10, 0, "grok2api 远端 Base:")
+        add_label(12, 0, "grok2api 远端 Base:")
         self.grok2api_remote_base_var = tk.StringVar(value=str(config.get("grok2api_remote_base", "")))
         self.grok2api_remote_base_entry = tk_entry(config_frame, textvariable=self.grok2api_remote_base_var, width=72)
-        add_field(self.grok2api_remote_base_entry, 10, 1, columnspan=3)
+        add_field(self.grok2api_remote_base_entry, 12, 1, columnspan=3)
 
-        add_label(11, 0, "grok2api 远端 app_key:")
+        add_label(13, 0, "grok2api 远端 app_key:")
         self.grok2api_remote_key_var = tk.StringVar(value=str(config.get("grok2api_remote_app_key", "")))
         self.grok2api_remote_key_entry = tk_entry(config_frame, textvariable=self.grok2api_remote_key_var, width=72)
-        add_field(self.grok2api_remote_key_entry, 11, 1, columnspan=3)
+        add_field(self.grok2api_remote_key_entry, 13, 1, columnspan=3)
 
-        add_label(12, 0, "新版管理员账号:")
+        add_label(14, 0, "新版管理员账号:")
         self.grok2api_remote_username_var = tk.StringVar(value=str(config.get("grok2api_remote_admin_username", "")))
         self.grok2api_remote_username_entry = tk_entry(config_frame, textvariable=self.grok2api_remote_username_var, width=34)
-        add_field(self.grok2api_remote_username_entry, 12, 1)
+        add_field(self.grok2api_remote_username_entry, 14, 1)
 
-        add_label(12, 2, "新版管理员密码:")
+        add_label(14, 2, "新版管理员密码:")
         self.grok2api_remote_password_var = tk.StringVar(value=str(config.get("grok2api_remote_admin_password", "")))
         self.grok2api_remote_password_entry = tk_entry(config_frame, textvariable=self.grok2api_remote_password_var, width=34, show="*")
-        add_field(self.grok2api_remote_password_entry, 12, 3)
+        add_field(self.grok2api_remote_password_entry, 14, 3)
 
-        add_label(13, 0, "OIDC / CPA:")
+        add_label(15, 0, "OIDC / CPA:")
         self.cpa_export_var = tk.BooleanVar(value=bool(config.get("cpa_export_enabled", False)))
         self.cpa_export_check = tk_checkbutton(config_frame, text="注册成功后导出 CPA xAI OIDC", variable=self.cpa_export_var)
-        add_field(self.cpa_export_check, 13, 1, sticky=tk.W)
+        add_field(self.cpa_export_check, 15, 1, sticky=tk.W)
 
-        add_label(13, 2, "CPA 输出目录:")
+        add_label(15, 2, "CPA 输出目录:")
         self.cpa_auth_dir_var = tk.StringVar(value=str(config.get("cpa_auth_dir", "./cpa_auths")))
         self.cpa_auth_dir_entry = tk_entry(config_frame, textvariable=self.cpa_auth_dir_var, width=34)
-        add_field(self.cpa_auth_dir_entry, 13, 3)
+        add_field(self.cpa_auth_dir_entry, 15, 3)
 
-        add_label(14, 0, "并发注册:")
+        add_label(16, 0, "并发注册:")
         self.multi_thread_var = tk.BooleanVar(value=bool(config.get("multi_thread_enabled", False)))
         self.multi_thread_check = tk_checkbutton(
             config_frame,
@@ -891,8 +928,8 @@ class GrokRegisterGUI:
             variable=self.multi_thread_var,
             command=self._sync_multithread_controls,
         )
-        add_field(self.multi_thread_check, 14, 1, sticky=tk.W)
-        add_label(14, 2, "线程数:")
+        add_field(self.multi_thread_check, 16, 1, sticky=tk.W)
+        add_label(16, 2, "线程数:")
         self.multi_thread_workers_var = tk.StringVar(value=str(config.get("multi_thread_workers", 4)))
         self.multi_thread_workers_spinbox = tk.Spinbox(
             config_frame,
@@ -908,38 +945,39 @@ class GrokRegisterGUI:
             disabledforeground=UI_MUTED_FG,
             relief=tk.SOLID,
         )
-        add_field(self.multi_thread_workers_spinbox, 14, 3, sticky=tk.W)
+        add_field(self.multi_thread_workers_spinbox, 16, 3, sticky=tk.W)
         self._sync_multithread_controls()
 
-        add_label(15, 0, "代理模式:")
+        add_label(17, 0, "代理模式:")
         self.proxy_mode_var = tk.StringVar(value=str(config.get("proxy_mode", "auto")))
         self.proxy_mode_combo = tk_option_menu(config_frame, self.proxy_mode_var, ["auto", "direct", "single", "pool"], width=12)
-        add_field(self.proxy_mode_combo, 15, 1, sticky=tk.W)
-        add_label(15, 2, "代理池回退:")
+        add_field(self.proxy_mode_combo, 17, 1, sticky=tk.W)
+        add_label(17, 2, "代理池回退:")
         self.proxy_fallback_var = tk.StringVar(value=str(config.get("proxy_fallback", "none")))
         self.proxy_fallback_combo = tk_option_menu(config_frame, self.proxy_fallback_var, ["none", "direct", "single"], width=12)
-        add_field(self.proxy_fallback_combo, 15, 3, sticky=tk.W)
+        add_field(self.proxy_fallback_combo, 17, 3, sticky=tk.W)
 
-        add_label(16, 0, "代理池文件:")
+        add_label(18, 0, "代理池文件:")
         self.proxy_pool_file_var = tk.StringVar(value=str(config.get("proxy_pool_file", "")))
         self.proxy_pool_file_entry = tk_entry(config_frame, textvariable=self.proxy_pool_file_var, width=34)
-        add_field(self.proxy_pool_file_entry, 16, 1)
-        add_label(16, 2, "节点类型:")
+        add_field(self.proxy_pool_file_entry, 18, 1)
+        add_label(18, 2, "节点类型:")
         self.proxy_endpoint_mode_var = tk.StringVar(value=str(config.get("proxy_pool_endpoint_mode", "auto")))
         self.proxy_endpoint_mode_combo = tk_option_menu(config_frame, self.proxy_endpoint_mode_var, ["auto", "fixed", "rotating"], width=12)
-        add_field(self.proxy_endpoint_mode_combo, 16, 3, sticky=tk.W)
+        add_field(self.proxy_endpoint_mode_combo, 18, 3, sticky=tk.W)
 
-        add_label(17, 0, "代理订阅 URL:")
+        add_label(19, 0, "代理订阅 URL:")
         self.proxy_subscription_var = tk.StringVar(value=str(config.get("proxy_pool_subscription_url", "")))
         self.proxy_subscription_entry = tk_entry(config_frame, textvariable=self.proxy_subscription_var, width=72)
-        add_field(self.proxy_subscription_entry, 17, 1, columnspan=3)
+        add_field(self.proxy_subscription_entry, 19, 1, columnspan=3)
 
-        add_label(18, 0, "单节点并发:")
+        add_label(20, 0, "单节点并发:")
         self.proxy_capacity_var = tk.StringVar(value=str(config.get("proxy_pool_max_concurrent_per_node", 1)))
         self.proxy_capacity_spinbox = tk.Spinbox(config_frame, from_=1, to=64, width=8, textvariable=self.proxy_capacity_var, bg=UI_ENTRY_BG, fg=UI_FG, insertbackground=UI_FG, buttonbackground=UI_BUTTON_BG, relief=tk.SOLID)
-        add_field(self.proxy_capacity_spinbox, 18, 1, sticky=tk.W)
+        add_field(self.proxy_capacity_spinbox, 20, 1, sticky=tk.W)
         self.proxy_test_btn = tk_button(config_frame, text="测试代理池", command=self.test_proxy_pool)
-        add_field(self.proxy_test_btn, 18, 3, sticky=tk.W)
+        add_field(self.proxy_test_btn, 20, 3, sticky=tk.W)
+        self._on_provider_change()
 
         btn_frame = tk.Frame(main_frame, bg=UI_BG)
         btn_frame.grid(row=1, column=0, sticky=tk.EW, pady=(0, 6))
@@ -1052,6 +1090,22 @@ class GrokRegisterGUI:
         state = tk.NORMAL if bool(self.multi_thread_var.get()) else tk.DISABLED
         self.multi_thread_workers_spinbox.config(state=state)
 
+    def _on_provider_change(self, *args):
+        """根据当前邮箱服务商显示对应配置项，隐藏无关项。"""
+        provider = (self.email_provider_var.get() or "duckmail").strip().lower()
+        groups = {
+            "duckmail": self._duck_widgets,
+            "yyds": self._yyds_widgets,
+            "cloudflare": self._cf_widgets,
+            "cloudmail": self._cloudmail_widgets,
+        }
+        for key, widgets in groups.items():
+            for widget in widgets:
+                if key == provider:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+
     def test_proxy_pool(self):
         if self.is_running:
             self.log("[!] 注册任务运行期间不能手动测试代理池")
@@ -1097,6 +1151,9 @@ class GrokRegisterGUI:
         config["proxy_pool_subscription_url"] = self.proxy_subscription_var.get().strip()
         config["proxy_pool_endpoint_mode"] = self.proxy_endpoint_mode_var.get().strip() or "auto"
         config["duckmail_api_key"] = self.api_key_var.get().strip()
+        config["yyds_api_key"] = self.yyds_api_key_var.get().strip()
+        config["yyds_jwt"] = self.yyds_jwt_var.get().strip()
+        config["yyds_domain"] = self.yyds_domain_var.get().strip()
         config["cloudflare_api_base"] = self.cloudflare_api_base_var.get().strip()
         config["cloudflare_api_key"] = self.cloudflare_api_key_var.get().strip()
         config["cloudflare_auth_mode"] = self.cloudflare_auth_mode_var.get().strip() or "none"
