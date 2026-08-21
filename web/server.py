@@ -65,9 +65,20 @@ def _load_config_if_idle() -> dict[str, Any]:
         return dict(engine.config)
 
 
+def _data_dir() -> Path:
+    import os
+
+    raw = (os.environ.get("GROK_REGISTER_DATA_DIR") or "").strip()
+    if raw:
+        path = Path(raw).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    return ROOT
+
+
 def _new_accounts_file() -> str:
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    return str(ROOT / ("accounts_%s.txt" % stamp))
+    return str(_data_dir() / ("accounts_%s.txt" % stamp))
 
 
 def _update_progress(batch: Any) -> None:
@@ -308,9 +319,15 @@ def stop():
 
 
 def main() -> None:
+    import os
     import uvicorn
 
-    uvicorn.run("web.server:app", host="127.0.0.1", port=8092, workers=1)
+    host = (os.environ.get("GROK_REGISTER_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        port = int(os.environ.get("GROK_REGISTER_PORT") or "8092")
+    except ValueError:
+        port = 8092
+    uvicorn.run("web.server:app", host=host, port=port, workers=1)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,31 @@
+services:
+  grok-register:
+    # Prefer published image; override with `docker compose build` when developing.
+    image: ghcr.io/pipmmz/grok-register:latest
+    build: .
+    container_name: grok-register
+    restart: unless-stopped
+    ports:
+      - "8092:8092"
+    environment:
+      GROK_REGISTER_HOST: "0.0.0.0"
+      GROK_REGISTER_PORT: "8092"
+      DISPLAY: ":99"
+      # Optional: lower Xvfb resolution to save a bit of RAM
+      XVFB_WHD: "1280x720x24"
+    volumes:
+      # Persist config + account outputs outside the container
+      - ./data:/data
+      # Optional: mount your own config directly
+      # - ./config.json:/data/config.json:ro
+    # Chromium is happier with a bit more shared memory
+    shm_size: "512mb"
+    # If you hit browser sandbox issues on some hosts, uncomment:
+    # security_opt:
+    #   - seccomp:unconfined
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8092/api/config"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

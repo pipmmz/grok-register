@@ -159,10 +159,47 @@ def apply_browser_proxy_option(options, proxy):
         options.set_argument("--proxy-server", proxy)
 
 
+def _detect_browser_binary():
+    """Prefer env override, then common Chromium/Chrome paths (Docker/Linux)."""
+    for key in ("BROWSER_PATH", "CHROME_BIN", "CHROMIUM_PATH"):
+        candidate = str(os.environ.get(key, "") or "").strip()
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    for candidate in (
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
 def create_browser_options(browser_proxy="", extension_path=None):
     options = ChromiumOptions()
     options.auto_port()
     options.set_timeouts(base=1)
+    browser_bin = _detect_browser_binary()
+    if browser_bin:
+        try:
+            options.set_browser_path(browser_bin)
+        except Exception:
+            pass
+    # Container / Xvfb friendly defaults. Harmless on desktop hosts.
+    for flag in (
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--mute-audio",
+        "--window-size=1280,900",
+    ):
+        try:
+            options.set_argument(flag)
+        except Exception:
+            pass
     apply_browser_proxy_option(options, browser_proxy)
     effective_extension = _extension_path if extension_path is None else str(extension_path or "")
     if effective_extension and os.path.exists(effective_extension):

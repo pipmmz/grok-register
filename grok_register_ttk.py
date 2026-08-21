@@ -38,6 +38,19 @@ import traceback
 
 os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
 
+
+def _accounts_data_dir():
+    """Prefer GROK_REGISTER_DATA_DIR (Docker /data); else project root."""
+    raw = str(os.environ.get("GROK_REGISTER_DATA_DIR", "") or "").strip()
+    if raw:
+        path = os.path.abspath(os.path.expanduser(raw))
+        try:
+            os.makedirs(path, exist_ok=True)
+        except Exception:
+            pass
+        return path
+    return os.path.dirname(os.path.abspath(__file__))
+
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
 from curl_cffi import requests
@@ -1232,7 +1245,7 @@ class GrokRegisterGUI:
         self.results = []
         now = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.accounts_output_file = os.path.join(
-            os.path.dirname(__file__), f"accounts_{now}.txt"
+            _accounts_data_dir(), f"accounts_{now}.txt"
         )
         self.update_stats()
         self._set_running_ui(True)
@@ -1303,7 +1316,7 @@ def cli_log(message):
 def run_registration_cli(count):
     controller = CliStopController()
     accounts_output_file = os.path.join(
-        os.path.dirname(__file__),
+        _accounts_data_dir(),
         f"accounts_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
     )
     cli_log(f"[*] 终端模式启动，目标数量: {count}")
