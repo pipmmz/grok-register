@@ -49,6 +49,7 @@ import account_outputs as _account_outputs
 import browser_runtime as _browser_runtime
 import mail_service as _mail_service
 import registration_browser as _registration_browser
+import sso_risk as _sso_risk
 from app_config import (
     DEFAULT_CONFIG, ConfigError, config, load_config, save_config,
     validate_config, validate_config_structure, validate_run_requirements,
@@ -261,6 +262,10 @@ def _bind_account_outputs():
         compatibility_error=RemoteTokenCompatibilityError,
         request_error=RemoteTokenRequestError,
     )
+
+
+def _bind_sso_risk():
+    _sso_risk.configure_risk_runtime(config, http_get)
 
 
 def _bind_mail_service():
@@ -634,6 +639,11 @@ def retry_pending_file(pending_path, output_path=None, log_callback=None):
     return _retry_pending_file(pending_path, output_path=output_path, log_callback=log_callback)
 
 
+def _screen_registered_sso(sso, email, log_callback=None):
+    _bind_sso_risk()
+    return _sso_risk.ensure_sso_eligible(sso, email=email, log_callback=log_callback)
+
+
 def run_registration_common(count, log_callback, cancel_callback, accounts_output_file, observer):
     from registration_flow import RegistrationCallbacks, RegistrationOperations, run_batch
     callbacks = RegistrationCallbacks(log=log_callback, cancelled=cancel_callback)
@@ -675,6 +685,8 @@ def run_registration_common(count, log_callback, cancel_callback, accounts_outpu
         sleep=lambda seconds: sleep_with_cancel(seconds, cancel_callback),
         cancelled_exception=RegistrationCancelled,
         retry_exception=AccountRetryNeeded,
+        internal_stage_markers=True,
+        screen_sso=lambda sso, email: _screen_registered_sso(sso, email, log_callback),
     )
     return run_batch(
         count=count,
@@ -890,6 +902,11 @@ class GrokRegisterGUI:
         self.grok2api_remote_auto_check = tk_checkbutton(config_frame, variable=self.grok2api_remote_auto_var)
         add_field(self.grok2api_remote_auto_check, 11, 1, sticky=tk.W)
 
+        add_label(11, 2, "SSO 风控:")
+        self.sso_risk_var = tk.BooleanVar(value=bool(config.get("sso_risk_gate_enabled", True)))
+        self.sso_risk_check = tk_checkbutton(config_frame, text="入库前筛查 botFlag/policy", variable=self.sso_risk_var)
+        add_field(self.sso_risk_check, 11, 3, sticky=tk.W)
+
         add_label(12, 0, "grok2api 远端 Base:")
         self.grok2api_remote_base_var = tk.StringVar(value=str(config.get("grok2api_remote_base", "")))
         self.grok2api_remote_base_entry = tk_entry(config_frame, textvariable=self.grok2api_remote_base_var, width=72)
@@ -978,6 +995,20 @@ class GrokRegisterGUI:
         self.proxy_test_btn = tk_button(config_frame, text="测试代理池", command=self.test_proxy_pool)
         add_field(self.proxy_test_btn, 20, 3, sticky=tk.W)
         self._on_provider_change()
+
+        add_label(19, 0, "高级协议后端:")
+        self.proxy_protocol_backend_var = tk.StringVar(value=str(config.get("proxy_protocol_backend", "auto")))
+        self.proxy_protocol_backend_combo = tk_option_menu(config_frame, self.proxy_protocol_backend_var, ["auto", "sing-box", "native-only"], width=12)
+        add_field(self.proxy_protocol_backend_combo, 19, 1, sticky=tk.W)
+        add_label(19, 2, "sing-box 路径:")
+        self.proxy_singbox_path_var = tk.StringVar(value=str(config.get("proxy_singbox_path", "")))
+        self.proxy_singbox_path_entry = tk_entry(config_frame, textvariable=self.proxy_singbox_path_var, width=34)
+        add_field(self.proxy_singbox_path_entry, 19, 3)
+
+        add_label(20, 0, "协议启动超时(秒):")
+        self.proxy_protocol_start_timeout_var = tk.StringVar(value=str(config.get("proxy_protocol_start_timeout_sec", 10)))
+        self.proxy_protocol_start_timeout_spinbox = tk.Spinbox(config_frame, from_=3, to=60, width=8, textvariable=self.proxy_protocol_start_timeout_var, bg=UI_ENTRY_BG, fg=UI_FG, insertbackground=UI_FG, buttonbackground=UI_BUTTON_BG, relief=tk.SOLID)
+        add_field(self.proxy_protocol_start_timeout_spinbox, 20, 1, sticky=tk.W)
 
         btn_frame = tk.Frame(main_frame, bg=UI_BG)
         btn_frame.grid(row=1, column=0, sticky=tk.EW, pady=(0, 6))
@@ -1121,6 +1152,9 @@ class GrokRegisterGUI:
                     "proxy_pool_subscription_url": self.proxy_subscription_var.get().strip(),
                     "proxy_pool_endpoint_mode": self.proxy_endpoint_mode_var.get().strip() or "auto",
                     "proxy_pool_max_concurrent_per_node": int(self.proxy_capacity_var.get()),
+                    "proxy_protocol_backend": self.proxy_protocol_backend_var.get().strip() or "auto",
+                    "proxy_singbox_path": self.proxy_singbox_path_var.get().strip(),
+                    "proxy_protocol_start_timeout_sec": int(self.proxy_protocol_start_timeout_var.get()),
                 })
                 candidate = validate_config_structure(candidate)
                 from proxy_pool import get_manager, reset_manager
@@ -1150,6 +1184,8 @@ class GrokRegisterGUI:
         config["proxy_pool_file"] = self.proxy_pool_file_var.get().strip()
         config["proxy_pool_subscription_url"] = self.proxy_subscription_var.get().strip()
         config["proxy_pool_endpoint_mode"] = self.proxy_endpoint_mode_var.get().strip() or "auto"
+        config["proxy_protocol_backend"] = self.proxy_protocol_backend_var.get().strip() or "auto"
+        config["proxy_singbox_path"] = self.proxy_singbox_path_var.get().strip()
         config["duckmail_api_key"] = self.api_key_var.get().strip()
         config["yyds_api_key"] = self.yyds_api_key_var.get().strip()
         config["yyds_jwt"] = self.yyds_jwt_var.get().strip()
@@ -1170,6 +1206,7 @@ class GrokRegisterGUI:
         config["grok2api_remote_admin_password"] = self.grok2api_remote_password_var.get()
         config["cpa_export_enabled"] = bool(self.cpa_export_var.get())
         config["cpa_auth_dir"] = self.cpa_auth_dir_var.get().strip() or "./cpa_auths"
+        config["sso_risk_gate_enabled"] = bool(self.sso_risk_var.get())
         config["multi_thread_enabled"] = bool(self.multi_thread_var.get())
         raw_paths = [x.strip() for x in self.cloudflare_paths_var.get().split(",") if x.strip()]
         if len(raw_paths) >= 4:
@@ -1182,6 +1219,7 @@ class GrokRegisterGUI:
             config["register_count"] = count
             config["multi_thread_workers"] = int(self.multi_thread_workers_var.get())
             config["proxy_pool_max_concurrent_per_node"] = int(self.proxy_capacity_var.get())
+            config["proxy_protocol_start_timeout_sec"] = int(self.proxy_protocol_start_timeout_var.get())
             validated = validate_run_requirements(config)
             config.clear()
             config.update(validated)
