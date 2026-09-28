@@ -1021,7 +1021,7 @@ class GrokRegisterGUI:
         self.yyds_jwt_entry = tk_entry(config_frame, textvariable=self.yyds_jwt_var, width=34)
         add_field(self.yyds_jwt_entry, 3, 1, provider=self._yyds_widgets)
 
-        add_label(3, 2, "YYDS 域名(留空自动):", provider=self._yyds_widgets)
+        add_label(3, 2, "YYDS 域名(逗号分隔,留空自动):", provider=self._yyds_widgets)
         self.yyds_domain_var = tk.StringVar(value=config.get("yyds_domain", ""))
         self.yyds_domain_entry = tk_entry(config_frame, textvariable=self.yyds_domain_var, width=34)
         add_field(self.yyds_domain_entry, 3, 3, provider=self._yyds_widgets)

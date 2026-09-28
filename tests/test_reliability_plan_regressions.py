@@ -1,4 +1,5 @@
 import pathlib
+from unittest.mock import patch
 
 import pytest
 
@@ -20,6 +21,49 @@ def test_domain_allocator_is_process_shared_and_provider_scoped():
     allocator = registration_parallel.DomainAllocator()
     assert [allocator.next("cf", ["a", "b", "c"]) for _ in range(4)] == ["a", "b", "c", "a"]
     assert allocator.next("cloudmail", ["x", "y"]) == "x"
+
+
+def test_yyds_domain_list_rotates_per_mailbox(monkeypatch):
+    mail_service.config = {"yyds_domain": "a.com, b.com ,@c.com."}
+    mail_service._yyds_domain_index = 0
+    assert mail_service._yyds_configured_domains() == ["a.com", "b.com", "c.com"]
+    assert [mail_service.yyds_next_domain() for _ in range(4)] == ["a.com", "b.com", "c.com", "a.com"]
+    assert mail_service.get_yyds_domain() == "a.com"
+
+    mail_service.config = {"yyds_domain": ""}
+    assert mail_service.yyds_next_domain() == ""
+    assert mail_service.get_yyds_domain() == ""
+
+
+def test_yyds_domain_rotation_uses_shared_allocator(monkeypatch):
+    allocator = registration_parallel.DomainAllocator()
+    mail_service.config = {"yyds_domain": "a.com,b.com"}
+    monkeypatch.setattr(mail_service, "domain_allocator", allocator, raising=False)
+    try:
+        assert [mail_service.yyds_next_domain() for _ in range(3)] == ["a.com", "b.com", "a.com"]
+        # 分配器按 provider 分桶：YYDS 的序号不影响 Cloudflare。
+        assert allocator.next("cloudflare", ["x.com", "y.com"]) == "x.com"
+    finally:
+        monkeypatch.delattr(mail_service, "domain_allocator", raising=False)
+
+
+def test_yyds_email_creation_uses_rotated_domain():
+    mail_service.config = {"yyds_domain": "a.com,b.com", "yyds_api_key": "key"}
+    mail_service._yyds_domain_index = 0
+    created = []
+
+    def fake_create(address, domain="", api_key=None, jwt=None):
+        created.append(domain)
+        return {"address": f"{address}@{domain}", "token": "tok"}
+
+    with patch.object(mail_service, "yyds_create_account", side_effect=fake_create), \
+         patch.object(mail_service, "yyds_generate_username", return_value="user1"), \
+         patch.object(mail_service, "print", create=True):
+        first = mail_service.yyds_get_email_and_token(api_key="key")
+        second = mail_service.yyds_get_email_and_token(api_key="key")
+
+    assert created == ["a.com", "b.com"]
+    assert first[0] == "user1@a.com" and second[0] == "user1@b.com"
 
 
 def test_query_key_has_params_but_no_bearer(monkeypatch):

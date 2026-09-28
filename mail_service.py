@@ -18,6 +18,7 @@ CLOUDMAIL_AUTH_CONVERGENCE_SECONDS = 70.0
 
 config = {}
 _cf_domain_index = 0
+_yyds_domain_index = 0
 _cloudmail_domain_index = 0
 
 
@@ -43,14 +44,14 @@ def _detail_retry_attempt(state, message_id, now=None):
     record["next_retry_at"] = current + delay
     return attempt
 
-_OWN_NAMES = {'cloudmail_build_headers', 'cloudmail_preflight', 'cloudmail_wait_for_auth', 'cloudmail_get_email_and_token', 'get_messages', 'cloudflare_get_messages', 'get_yyds_api_key', 'get_yyds_domain', 'yyds_generate_username', 'yyds_get_domains', 'yyds_get_email_and_token', 'yyds_get_oai_code', 'get_email_provider', 'cloudflare_get_domains', 'extract_verification_code', 'get_cloudflare_api_base', 'cloudflare_apply_auth_params', 'duckmail_get_oai_code', 'create_account', 'get_yyds_jwt', 'get_message_detail', 'yyds_create_account', 'get_duckmail_api_key', 'get_cloudflare_path', 'cloudflare_create_account', 'cloudflare_get_token', 'cloudflare_get_oai_code', 'get_cloudmail_public_token', 'generate_username', 'yyds_get_message_detail', 'cloudflare_next_default_domain', 'yyds_get_messages', 'yyds_get_token', 'get_domains', 'get_token', 'cloudflare_create_temp_address', 'get_cloudflare_api_key', 'get_cloudmail_path', 'get_cloudmail_api_base', 'cloudmail_get_oai_code', 'cloudflare_build_headers', 'cloudflare_is_admin_create_path', 'cloudmail_next_domain', 'cloudflare_get_message_detail', 'cloudmail_get_messages', 'get_user_agent', 'yyds_pick_domain', '_pick_list_payload', 'get_email_and_token', 'get_oai_code', 'get_cloudflare_auth_mode', 'pick_domain'}
+_OWN_NAMES = {'cloudmail_build_headers', 'cloudmail_preflight', 'cloudmail_wait_for_auth', 'cloudmail_get_email_and_token', 'get_messages', 'cloudflare_get_messages', 'get_yyds_api_key', 'get_yyds_domain', 'yyds_generate_username', 'yyds_get_domains', 'yyds_get_email_and_token', 'yyds_get_oai_code', 'get_email_provider', 'cloudflare_get_domains', 'extract_verification_code', 'get_cloudflare_api_base', 'cloudflare_apply_auth_params', 'duckmail_get_oai_code', 'create_account', 'get_yyds_jwt', 'get_message_detail', 'yyds_create_account', 'get_duckmail_api_key', 'get_cloudflare_path', 'cloudflare_create_account', 'cloudflare_get_token', 'cloudflare_get_oai_code', 'get_cloudmail_public_token', 'generate_username', 'yyds_next_domain', 'yyds_get_message_detail', 'cloudflare_next_default_domain', 'yyds_get_messages', 'yyds_get_token', 'get_domains', 'get_token', 'cloudflare_create_temp_address', 'get_cloudflare_api_key', 'get_cloudmail_path', 'get_cloudmail_api_base', 'cloudmail_get_oai_code', 'cloudflare_build_headers', 'cloudflare_is_admin_create_path', 'cloudmail_next_domain', 'cloudflare_get_message_detail', 'cloudmail_get_messages', 'get_user_agent', 'yyds_pick_domain', '_pick_list_payload', 'get_email_and_token', 'get_oai_code', 'get_cloudflare_auth_mode', 'pick_domain'}
 
 
 def bind_runtime(namespace):
     global config
     config = namespace.get("config", config)
     for name, value in namespace.items():
-        if name.startswith("__") or name in _OWN_NAMES or name in {"config", "_cf_domain_index", "_cloudmail_domain_index"}:
+        if name.startswith("__") or name in _OWN_NAMES or name in {"config", "_cf_domain_index", "_cloudmail_domain_index", "_yyds_domain_index"}:
             continue
         globals()[name] = value
 
@@ -1017,8 +1018,36 @@ def yyds_get_domains(api_key=None, jwt=None):
     data = resp.json()
     return data.get("data", []) if data.get("success") else []
 
+def _yyds_configured_domains():
+    """解析 yyds_domain：支持逗号分隔的多个域名（兼容 @ 前缀与结尾点）。"""
+    return [
+        item
+        for item in (
+            value.strip().lstrip("@").strip(".")
+            for value in str(config.get("yyds_domain", "") or "").split(",")
+        )
+        if item
+    ]
+
+
 def get_yyds_domain():
-    return str(config.get("yyds_domain", "") or "").strip().lstrip("@").strip(".")
+    """配置的第一个 YYDS 域名（兼容旧调用）。"""
+    domains = _yyds_configured_domains()
+    return domains[0] if domains else ""
+
+
+def yyds_next_domain():
+    """按配置轮换选择 YYDS 邮箱域名；未配置时返回空串，由 /v1/domains 自动挑选。"""
+    global _yyds_domain_index
+    domains = _yyds_configured_domains()
+    if not domains:
+        return ""
+    allocator = globals().get("domain_allocator")
+    if allocator is not None:
+        return allocator.next("yyds", domains)
+    domain = domains[_yyds_domain_index % len(domains)]
+    _yyds_domain_index += 1
+    return domain
 
 
 def yyds_get_email_and_token(api_key=None, jwt=None):
@@ -1026,8 +1055,8 @@ def yyds_get_email_and_token(api_key=None, jwt=None):
     token = jwt or get_yyds_jwt()
     if not token and not key:
         raise Exception("YYDS API Key 或 JWT 未配置")
-    # 显式配置域名则直接使用；为空则保持原逻辑：从 /v1/domains 自动挑选。
-    domain = get_yyds_domain() or yyds_pick_domain(api_key=key, jwt=token)
+    # 配置了域名（可多个，按账号轮转）则直接使用；未配置则从 /v1/domains 自动挑选。
+    domain = yyds_next_domain() or yyds_pick_domain(api_key=key, jwt=token)
     username = yyds_generate_username(10)
     result = yyds_create_account(
         address=username, domain=domain, api_key=key, jwt=token

@@ -283,6 +283,8 @@ The project performs structural validation at startup and checks fields required
 
 At least one of `yyds_api_key` and `yyds_jwt` must be provided.
 
+`yyds_domain` accepts a comma-separated list of domains (for example `a.com,b.com,c.com`) and rotates through them for every mailbox created. Leave it empty to keep auto-picking a verified domain from YYDS `/v1/domains`. In multi-thread mode the rotation is handed to the shared domain allocator, so workers never receive the same index.
+
 #### Outlook mailbox pool
 
 Outlook mode uses existing Outlook / Microsoft mailboxes that can be read through OAuth2. It does not create Microsoft mailboxes. The configuration stores only the mailbox-pool file path:

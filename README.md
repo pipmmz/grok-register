@@ -283,6 +283,8 @@ CLI 读取 `config.json`，通过校验后提示：
 
 `yyds_api_key` 和 `yyds_jwt` 至少填写一个。
 
+`yyds_domain` 支持用英文逗号配置多个域名（例如 `a.com,b.com,c.com`），每创建一个邮箱按顺序轮转；留空时仍从 YYDS `/v1/domains` 自动挑选已验证域名。多线程模式下轮转由共享的 domain allocator 统一分配，worker 之间不会拿到重复序号。
+
 #### Outlook 邮箱池
 
 Outlook 模式使用已经存在、可通过 OAuth2 读取邮件的 Outlook / Microsoft 邮箱，不负责创建 Microsoft 邮箱。配置中只保存邮箱池文件路径：
