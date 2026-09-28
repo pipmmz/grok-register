@@ -105,6 +105,9 @@ def run_parallel_batch(count, callbacks, observer, runtime_namespace, accounts_o
         )
         mail_runtime = dict(runtime_namespace)
         mail_runtime["domain_allocator"] = domain_allocator
+        if runtime_namespace.get("outlook_runtime") is not None:
+            # Every isolated worker receives the same task-scoped allocator.
+            mail_runtime["outlook_runtime"] = runtime_namespace["outlook_runtime"]
         mail_module.bind_runtime(mail_runtime)
 
         worker_namespace = dict(mail_runtime)
@@ -121,6 +124,15 @@ def run_parallel_batch(count, callbacks, observer, runtime_namespace, accounts_o
         browser_module.bind_runtime(worker_namespace)
 
         worker_callbacks = RegistrationCallbacks(log=worker_log, cancelled=combined_cancelled)
+
+        def preflight_mail():
+            if str(mail_module.get_email_provider() or "").strip().lower() != "cloudmail":
+                return True
+            return mail_module.cloudmail_preflight(
+                log_callback=worker_log,
+                cancel_callback=combined_cancelled,
+                defer_until_slot=False,
+            )
 
         def save_mail(email, token):
             with io_lock:
@@ -160,7 +172,9 @@ def run_parallel_batch(count, callbacks, observer, runtime_namespace, accounts_o
                 log_callback=worker_log, cancel_callback=combined_cancelled
             ),
             fill_email_and_submit=lambda: browser_module.fill_email_and_submit(
-                log_callback=worker_log, cancel_callback=combined_cancelled
+                log_callback=worker_log,
+                cancel_callback=combined_cancelled,
+                on_mail_created=save_mail,
             ),
             save_mail_credential=save_mail,
             fill_code_and_submit=lambda email, token: browser_module.fill_code_and_submit(
@@ -191,6 +205,7 @@ def run_parallel_batch(count, callbacks, observer, runtime_namespace, accounts_o
             screen_sso=lambda sso, email: runtime_namespace["_screen_registered_sso"](
                 sso, email, worker_log
             ),
+            preflight_mail=preflight_mail,
         )
 
         def worker_observer(batch, account, output):

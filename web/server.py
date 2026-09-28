@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 import grok_register_ttk as engine
 
@@ -18,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 INDEX_HTML = Path(__file__).resolve().parent / "index.html"
 PROXY_POOL_JS = Path(__file__).resolve().parent / "proxy-pool.js"
 PROXY_POOL_CSS = Path(__file__).resolve().parent / "proxy-pool.css"
+OUTLOOK_MAILBOX_JS = Path(__file__).resolve().parent / "outlook-mailbox.js"
 LOG_LIMIT = 2000
 
 app = FastAPI(title="grok-register WebUI", version="1.2")
@@ -25,6 +27,7 @@ app = FastAPI(title="grok-register WebUI", version="1.2")
 _job_lock = threading.Lock()
 _job_thread: Optional[threading.Thread] = None
 _controller: Any = None
+_maintenance_state: Optional[str] = None
 _job_state = {
     "running": False,
     "target": 0,
@@ -55,12 +58,34 @@ def _append_log(message: str) -> None:
 
 def _state_snapshot() -> dict[str, Any]:
     with _job_lock:
-        return dict(_job_state)
+        snapshot = dict(_job_state)
+        snapshot["maintenance"] = _maintenance_state
+        return snapshot
+
+
+def _begin_maintenance(kind: str) -> None:
+    global _maintenance_state
+    with _job_lock:
+        if _job_state["running"]:
+            raise HTTPException(status_code=409, detail="注册任务运行期间不能执行维护操作")
+        if _maintenance_state is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="已有维护操作正在执行: %s" % _maintenance_state,
+            )
+        _maintenance_state = str(kind)
+
+
+def _end_maintenance(kind: str) -> None:
+    global _maintenance_state
+    with _job_lock:
+        if _maintenance_state == str(kind):
+            _maintenance_state = None
 
 
 def _load_config_if_idle() -> dict[str, Any]:
     with _job_lock:
-        if not _job_state["running"]:
+        if not _job_state["running"] and _maintenance_state is None:
             engine.load_config()
         return dict(engine.config)
 
@@ -124,6 +149,8 @@ def index():
         html = html.replace("</head>", '<link rel="stylesheet" href="/proxy-pool.css">\n</head>', 1)
     if PROXY_POOL_JS.is_file():
         html = html.replace("</body>", '<script src="/proxy-pool.js"></script>\n</body>', 1)
+    if OUTLOOK_MAILBOX_JS.is_file():
+        html = html.replace("</body>", '<script src="/outlook-mailbox.js"></script>\n</body>', 1)
     return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
@@ -135,6 +162,30 @@ def proxy_pool_js():
 @app.get("/proxy-pool.css", include_in_schema=False)
 def proxy_pool_css():
     return FileResponse(PROXY_POOL_CSS, media_type="text/css", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/outlook-mailbox.js", include_in_schema=False)
+def outlook_mailbox_js():
+    return FileResponse(OUTLOOK_MAILBOX_JS, media_type="application/javascript", headers={"Cache-Control": "no-store"})
+
+
+@app.middleware("http")
+async def protect_outlook_mailbox_api(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/mailboxes/outlook"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+def _require_local_origin(request: Request) -> None:
+    origin = str(request.headers.get("origin") or "").strip()
+    if not origin:
+        return
+    from urllib.parse import urlsplit
+    host = (urlsplit(origin).hostname or "").lower()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise HTTPException(status_code=403, detail="Outlook 邮箱池只允许本地 WebUI 访问")
 
 
 @app.get("/health")
@@ -161,11 +212,13 @@ async def put_config(request: Request):
     with _job_lock:
         if _job_state["running"]:
             raise HTTPException(status_code=409, detail="任务运行期间不能修改配置")
+        if _maintenance_state is not None:
+            raise HTTPException(status_code=409, detail="维护操作期间不能修改配置")
         engine.load_config()
         candidate = dict(engine.config)
         candidate.update(updates)
         try:
-            validated = engine.validate_run_requirements(candidate)
+            validated = engine.validate_config_structure(candidate)
         except engine.ConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         engine.config.clear()
@@ -173,6 +226,72 @@ async def put_config(request: Request):
         engine.save_config()
         result = dict(engine.config)
     return {"ok": True, "config": result}
+
+
+@app.get("/api/mailboxes/outlook")
+def get_outlook_mailboxes(request: Request):
+    _require_local_origin(request)
+    from outlook_mailbox_pool import load_outlook_mailbox_pool
+    cfg = _load_config_if_idle()
+    try:
+        summary = load_outlook_mailbox_pool(cfg.get("outlook_accounts_file", ""))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({
+        "ok": True,
+        "path": summary["path"],
+        "data": summary["data"],
+        "count": summary["count"],
+        "invalid": summary["invalid"],
+        "duplicates": summary["duplicates"],
+        "accounts": summary["accounts"],
+    })
+
+
+@app.put("/api/mailboxes/outlook")
+async def put_outlook_mailboxes(request: Request):
+    _require_local_origin(request)
+    payload = await request.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), str):
+        raise HTTPException(status_code=400, detail="请求必须包含字符串字段 data")
+    from outlook_mailbox_pool import save_outlook_mailbox_pool
+    with _job_lock:
+        if _job_state["running"]:
+            raise HTTPException(status_code=409, detail="任务运行期间不能修改 Outlook 邮箱池")
+        if _maintenance_state is not None:
+            raise HTTPException(status_code=409, detail="维护操作期间不能修改 Outlook 邮箱池")
+        engine.load_config()
+        path = engine.config.get("outlook_accounts_file", "")
+        try:
+            summary = save_outlook_mailbox_pool(path, payload["data"])
+        except (ValueError, RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _append_log("[*] Outlook 邮箱池已保存: %s 个账号" % summary["count"])
+    return JSONResponse({"ok": True, **summary})
+
+
+@app.post("/api/mailboxes/outlook/test")
+async def test_outlook_mailboxes(request: Request):
+    _require_local_origin(request)
+    payload = await request.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), str):
+        raise HTTPException(status_code=400, detail="请求必须包含字符串字段 data")
+    from outlook_mailbox_pool import probe_outlook_mailbox_pool_data
+
+    kind = "outlook_mailbox_test"
+    _begin_maintenance(kind)
+    try:
+        try:
+            summary = await run_in_threadpool(probe_outlook_mailbox_pool_data, payload["data"])
+        except (ValueError, RuntimeError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _end_maintenance(kind)
+    _append_log(
+        "[*] Outlook 邮箱池健康检查完成: %s/%s 个账号可用"
+        % (summary["healthy"], summary["count"])
+    )
+    return JSONResponse({"ok": True, **summary})
 
 
 @app.get("/api/proxy-pool/status")
@@ -185,9 +304,9 @@ def proxy_pool_status():
 @app.post("/api/proxy-pool/reload")
 def proxy_pool_reload():
     from proxy_pool import get_manager
-    with _job_lock:
-        if _job_state["running"]:
-            raise HTTPException(status_code=409, detail="任务运行期间不能重新加载代理池")
+    kind = "proxy_reload"
+    _begin_maintenance(kind)
+    try:
         engine.load_config()
         try:
             cfg = engine.validate_config_structure(dict(engine.config))
@@ -195,6 +314,8 @@ def proxy_pool_reload():
             snapshot = manager.reload_sources(force=True)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _end_maintenance(kind)
     _append_log("[*] 代理池已重新加载")
     return {"ok": True, **snapshot}
 
@@ -202,17 +323,19 @@ def proxy_pool_reload():
 @app.post("/api/proxy-pool/test")
 def proxy_pool_test():
     from proxy_pool import get_manager
-    with _job_lock:
-        if _job_state["running"]:
-            raise HTTPException(status_code=409, detail="任务运行期间不能手动测试代理池")
+    kind = "proxy_test"
+    _begin_maintenance(kind)
+    try:
         engine.load_config()
         try:
             cfg = engine.validate_config_structure(dict(engine.config))
             manager = get_manager(config=cfg, log=_append_log)
             manager.reload_sources(force=True)
+            results = manager.probe_all(force=True)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    results = manager.probe_all(force=True)
+    finally:
+        _end_maintenance(kind)
     _append_log("[*] 代理池测试完成: %s 个节点" % len(results))
     return {"ok": True, "results": results, **manager.snapshot()}
 
@@ -220,9 +343,9 @@ def proxy_pool_test():
 @app.post("/api/proxy-pool/preflight")
 def proxy_pool_preflight(node_id: str = Query(..., min_length=1)):
     from proxy_pool import get_manager
-    with _job_lock:
-        if _job_state["running"]:
-            raise HTTPException(status_code=409, detail="任务运行期间不能执行注册路径预检")
+    kind = "proxy_preflight"
+    _begin_maintenance(kind)
+    try:
         engine.load_config()
         try:
             cfg = engine.validate_config_structure(dict(engine.config))
@@ -234,6 +357,8 @@ def proxy_pool_preflight(node_id: str = Query(..., min_length=1)):
             raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _end_maintenance(kind)
     _append_log("[*] 代理节点注册路径预检完成: %s" % node_id)
     return {"ok": True, "result": result, **manager.snapshot()}
 
@@ -258,6 +383,8 @@ def start():
     with _job_lock:
         if _job_state["running"]:
             raise HTTPException(status_code=409, detail="已有注册任务正在运行")
+        if _maintenance_state is not None:
+            raise HTTPException(status_code=409, detail="维护操作进行中，暂不能启动注册: %s" % _maintenance_state)
 
         engine.load_config()
         try:
@@ -267,7 +394,9 @@ def start():
         engine.config.clear()
         engine.config.update(validated)
 
-        count = int(engine.config["register_count"])
+        count = engine.resolve_registration_count(
+            int(engine.config["register_count"]), log_callback=_append_log
+        )
         controller = engine.CliStopController()
         accounts_file = _new_accounts_file()
 

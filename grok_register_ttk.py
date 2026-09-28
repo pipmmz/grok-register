@@ -157,10 +157,6 @@ def warn_runtime_compatibility():
 ensure_stable_python_runtime()
 warn_runtime_compatibility()
 
-EXTENSION_PATH = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "turnstilePatch")
-)
-
 
 
 
@@ -266,7 +262,7 @@ def _make_compat_proxy(module, name, binder=None):
 
 
 def _bind_browser_runtime():
-    _browser_runtime.configure_runtime(config, EXTENSION_PATH)
+    _browser_runtime.configure_runtime(config)
 
 
 def _bind_account_outputs():
@@ -450,6 +446,122 @@ def sleep_with_cancel(seconds, cancel_callback=None):
 
 
 
+
+
+
+def calculate_gui_window_size(screen_width, screen_height):
+    """Return a screen-aware initial and minimum GUI size."""
+    try:
+        screen_width = int(screen_width)
+    except (TypeError, ValueError):
+        screen_width = 1120
+    try:
+        screen_height = int(screen_height)
+    except (TypeError, ValueError):
+        screen_height = 900
+
+    screen_width = max(640, screen_width)
+    screen_height = max(480, screen_height)
+    width = min(1120, max(720, int(screen_width * 0.92)))
+    height = min(900, max(520, int(screen_height * 0.86)))
+    width = min(width, screen_width)
+    height = min(height, screen_height)
+    min_width = min(width, 900)
+    min_height = min(height, 600)
+    return width, height, min_width, min_height
+
+
+class ScrollableFrame(tk.Frame if TK_AVAILABLE else object):
+    """A vertically scrollable frame that leaves sibling controls fixed."""
+
+    def __init__(self, parent, bg=UI_BG, canvas_height=440, **kwargs):
+        if not TK_AVAILABLE:
+            raise RuntimeError("Tkinter is required for the scrollable GUI")
+        super().__init__(parent, bg=bg, **kwargs)
+        self._bg = bg
+        self.canvas = tk.Canvas(
+            self,
+            bg=bg,
+            highlightthickness=0,
+            borderwidth=0,
+            height=canvas_height,
+        )
+        self.scrollbar = tk.Scrollbar(
+            self,
+            orient=tk.VERTICAL,
+            command=self.canvas.yview,
+        )
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.content = tk.Frame(self.canvas, bg=bg, padx=10, pady=10)
+        self._window_id = self.canvas.create_window(
+            (0, 0),
+            window=self.content,
+            anchor="nw",
+        )
+
+        self.canvas.grid(row=0, column=0, sticky=tk.NSEW)
+        self.scrollbar.grid(row=0, column=1, sticky=tk.NS)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        self.content.bind("<Configure>", self._on_content_configure, add="+")
+        self.canvas.bind("<Configure>", self._on_canvas_configure, add="+")
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+        self._wheel_bindings = {}
+        self._wheel_toplevel = self.winfo_toplevel()
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            func_id = self._wheel_toplevel.bind(sequence, self._on_mousewheel, add="+")
+            if func_id:
+                self._wheel_bindings[sequence] = func_id
+
+    def _on_content_configure(self, _event=None):
+        bbox = self.canvas.bbox("all")
+        if bbox:
+            self.canvas.configure(scrollregion=bbox)
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfigure(self._window_id, width=max(1, event.width))
+
+    def _pointer_is_inside(self):
+        try:
+            widget = self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery())
+        except (tk.TclError, AttributeError):
+            return False
+        while widget is not None:
+            if widget is self:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
+    def _on_mousewheel(self, event):
+        if not self._pointer_is_inside():
+            return None
+        delta = int(getattr(event, "delta", 0) or 0)
+        number = getattr(event, "num", None)
+        if number == 4:
+            units = -1
+        elif number == 5:
+            units = 1
+        elif delta:
+            if abs(delta) >= 120:
+                units = -int(delta / 120)
+            else:
+                units = -1 if delta > 0 else 1
+        else:
+            return None
+        self.canvas.yview_scroll(units, "units")
+        return "break"
+
+    def _on_destroy(self, event):
+        if event.widget is not self:
+            return
+        try:
+            for sequence, func_id in self._wheel_bindings.items():
+                self._wheel_toplevel.unbind(sequence, func_id)
+        except (tk.TclError, AttributeError):
+            pass
+        self._wheel_bindings.clear()
 
 
 def setup_light_theme(root):
@@ -657,72 +769,124 @@ def _screen_registered_sso(sso, email, log_callback=None):
     return _sso_risk.ensure_sso_eligible(sso, email=email, log_callback=log_callback)
 
 
+def resolve_registration_count(count, log_callback=None):
+    requested = max(1, int(count))
+    provider = str(config.get("email_provider", "") or "").strip().lower()
+    if provider != "outlook":
+        return requested
+    from outlook_mailbox_pool import get_outlook_mailbox_pool_capacity
+    available = get_outlook_mailbox_pool_capacity(config.get("outlook_accounts_file", ""))
+    effective = min(requested, int(available))
+    if effective < requested and log_callback:
+        log_callback(
+            "[*] Outlook 邮箱池有 %s 个有效账号；请求 %s 个，本次最多执行 %s 个"
+            % (available, requested, effective)
+        )
+    return effective
+
+
 def run_registration_common(count, log_callback, cancel_callback, accounts_output_file, observer):
     from registration_flow import RegistrationCallbacks, RegistrationOperations, run_batch
+
+    provider = str(config.get("email_provider", "") or "").strip().lower()
+    effective_count = resolve_registration_count(count, log_callback=log_callback)
+    task_outlook_runtime = None
+    if provider == "outlook":
+        from outlook_mailbox_pool import create_outlook_task_runtime
+        task_outlook_runtime = create_outlook_task_runtime(
+            config.get("outlook_accounts_file", ""),
+            log_callback=log_callback,
+            cancelled_exception=RegistrationCancelled,
+        )
+        globals()["outlook_runtime"] = task_outlook_runtime
+        effective_count = min(effective_count, task_outlook_runtime.count)
+        _bind_mail_service()
+    elif provider == "cloudmail":
+        _bind_mail_service()
+        _mail_service.cloudmail_preflight(log_callback=log_callback)
+
     callbacks = RegistrationCallbacks(log=log_callback, cancelled=cancel_callback)
-    parallel_enabled = bool(config.get("multi_thread_enabled", False))
-    parallel_workers = int(config.get("multi_thread_workers", 4) or 4)
-    if parallel_enabled and parallel_workers > 1 and int(count) > 1:
-        from registration_parallel import run_parallel_batch
-        return run_parallel_batch(
-            count=int(count),
+    try:
+        parallel_enabled = bool(config.get("multi_thread_enabled", False))
+        parallel_workers = int(config.get("multi_thread_workers", 4) or 4)
+        if parallel_enabled and parallel_workers > 1 and effective_count > 1:
+            from registration_parallel import run_parallel_batch
+            return run_parallel_batch(
+                count=effective_count,
+                callbacks=callbacks,
+                observer=observer,
+                runtime_namespace=globals(),
+                accounts_output_file=accounts_output_file,
+                workers=parallel_workers,
+                enable_nsfw=bool(config.get("enable_nsfw", True)),
+                cleanup_interval=MEMORY_CLEANUP_INTERVAL,
+                max_slot_retry=3,
+                max_mail_retry=3,
+            )
+        operations = RegistrationOperations(
+            start_browser=lambda: start_browser(log_callback=log_callback),
+            restart_browser=lambda: restart_browser(log_callback=log_callback),
+            browser_missing=lambda: _registration_browser.browser is None,
+            open_signup_page=lambda: open_signup_page(log_callback=log_callback, cancel_callback=cancel_callback),
+            fill_email_and_submit=lambda: fill_email_and_submit(
+                log_callback=log_callback,
+                cancel_callback=cancel_callback,
+                on_mail_created=lambda email, token: _save_mail_credential(email, token, log_callback),
+            ),
+            save_mail_credential=lambda email, token: _save_mail_credential(email, token, log_callback),
+            fill_code_and_submit=lambda email, token: fill_code_and_submit(email, token, log_callback=log_callback, cancel_callback=cancel_callback),
+            fill_profile_and_submit=lambda: fill_profile_and_submit(log_callback=log_callback, cancel_callback=cancel_callback),
+            wait_for_sso_cookie=lambda: wait_for_sso_cookie(log_callback=log_callback, cancel_callback=cancel_callback),
+            enable_nsfw=lambda sso: enable_nsfw_for_token(sso, log_callback=log_callback),
+            persist_account_line=lambda email, password, sso: _append_account_line(accounts_output_file, email, password, sso),
+            queue_unsaved_result=lambda payload, error: _queue_unsaved_account(accounts_output_file, payload, error, log_callback),
+            add_tokens=lambda sso, email: add_token_to_grok2api_pools(sso, email=email, log_callback=log_callback),
+            export_cpa=lambda email, password, sso: maybe_export_cpa_xai_after_success(
+                email=email, password=password, sso=sso,
+                log_callback=log_callback, cancel_callback=cancel_callback,
+            ),
+            cleanup=lambda reason: cleanup_runtime_memory(log_callback=log_callback, reason=reason),
+            sleep=lambda seconds: sleep_with_cancel(seconds, cancel_callback),
+            cancelled_exception=RegistrationCancelled,
+            retry_exception=AccountRetryNeeded,
+            internal_stage_markers=True,
+            screen_sso=lambda sso, email: _screen_registered_sso(sso, email, log_callback),
+        )
+        return run_batch(
+            count=effective_count,
             callbacks=callbacks,
             observer=observer,
-            runtime_namespace=globals(),
-            accounts_output_file=accounts_output_file,
-            workers=parallel_workers,
+            ops=operations,
             enable_nsfw=bool(config.get("enable_nsfw", True)),
             cleanup_interval=MEMORY_CLEANUP_INTERVAL,
             max_slot_retry=3,
             max_mail_retry=3,
         )
-    operations = RegistrationOperations(
-        start_browser=lambda: start_browser(log_callback=log_callback),
-        restart_browser=lambda: restart_browser(log_callback=log_callback),
-        browser_missing=lambda: _registration_browser.browser is None,
-        open_signup_page=lambda: open_signup_page(log_callback=log_callback, cancel_callback=cancel_callback),
-        fill_email_and_submit=lambda: fill_email_and_submit(log_callback=log_callback, cancel_callback=cancel_callback),
-        save_mail_credential=lambda email, token: _save_mail_credential(email, token, log_callback),
-        fill_code_and_submit=lambda email, token: fill_code_and_submit(email, token, log_callback=log_callback, cancel_callback=cancel_callback),
-        fill_profile_and_submit=lambda: fill_profile_and_submit(log_callback=log_callback, cancel_callback=cancel_callback),
-        wait_for_sso_cookie=lambda: wait_for_sso_cookie(log_callback=log_callback, cancel_callback=cancel_callback),
-        enable_nsfw=lambda sso: enable_nsfw_for_token(sso, log_callback=log_callback),
-        persist_account_line=lambda email, password, sso: _append_account_line(accounts_output_file, email, password, sso),
-        queue_unsaved_result=lambda payload, error: _queue_unsaved_account(accounts_output_file, payload, error, log_callback),
-        add_tokens=lambda sso, email: add_token_to_grok2api_pools(sso, email=email, log_callback=log_callback),
-        export_cpa=lambda email, password, sso: maybe_export_cpa_xai_after_success(
-            email=email, password=password, sso=sso,
-            log_callback=log_callback, cancel_callback=cancel_callback,
-        ),
-        cleanup=lambda reason: cleanup_runtime_memory(log_callback=log_callback, reason=reason),
-        sleep=lambda seconds: sleep_with_cancel(seconds, cancel_callback),
-        cancelled_exception=RegistrationCancelled,
-        retry_exception=AccountRetryNeeded,
-        internal_stage_markers=True,
-        screen_sso=lambda sso, email: _screen_registered_sso(sso, email, log_callback),
-    )
-    return run_batch(
-        count=count,
-        callbacks=callbacks,
-        observer=observer,
-        ops=operations,
-        enable_nsfw=bool(config.get("enable_nsfw", True)),
-        cleanup_interval=MEMORY_CLEANUP_INTERVAL,
-        max_slot_retry=3,
-        max_mail_retry=3,
-    )
+    finally:
+        if task_outlook_runtime is not None:
+            task_outlook_runtime.close()
+            if globals().get("outlook_runtime") is task_outlook_runtime:
+                globals().pop("outlook_runtime", None)
 
 
 class GrokRegisterGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Grok 注册机")
-        self.root.geometry("1120x900")
-        self.root.minsize(960, 700)
+        width, height, min_width, min_height = calculate_gui_window_size(
+            self.root.winfo_screenwidth(),
+            self.root.winfo_screenheight(),
+        )
+        self.root.geometry(f"{width}x{height}")
+        self.root.minsize(min_width, min_height)
+        self.operation_lock = threading.Lock()
         self.is_running = False
+        self.registration_starting = False
+        self.proxy_test_running = False
         self.batch_count = 0
         self.success_count = 0
         self.fail_count = 0
+        self.uncertain_count = 0
         self.registered_unsaved_count = 0
         self.postprocess_warning_count = 0
         self.results = []
@@ -737,21 +901,35 @@ class GrokRegisterGUI:
         main_frame = tk.Frame(self.root, bg=UI_BG, padx=10, pady=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
         main_frame.grid_columnconfigure(0, weight=1)
-        main_frame.grid_rowconfigure(3, weight=1)
+        main_frame.grid_rowconfigure(0, weight=3, minsize=260)
+        main_frame.grid_rowconfigure(3, weight=2, minsize=150)
 
-        config_frame = tk.LabelFrame(
+        config_container = tk.LabelFrame(
             main_frame,
             text="配置",
             bg=UI_PANEL_BG,
             fg=UI_FG,
-            padx=10,
-            pady=10,
+            padx=0,
+            pady=0,
             relief=tk.GROOVE,
             borderwidth=1,
         )
-        config_frame.grid(row=0, column=0, sticky=tk.EW, pady=(0, 8))
-        config_frame.grid_columnconfigure(1, weight=1, minsize=260)
-        config_frame.grid_columnconfigure(3, weight=1, minsize=260)
+        config_container.grid(row=0, column=0, sticky=tk.NSEW, pady=(0, 8))
+        config_container.grid_columnconfigure(0, weight=1)
+        config_container.grid_rowconfigure(0, weight=1)
+
+        self.config_scroll = ScrollableFrame(
+            config_container,
+            bg=UI_PANEL_BG,
+            canvas_height=440,
+        )
+        self.config_scroll.grid(row=0, column=0, sticky=tk.NSEW)
+        self.config_canvas = self.config_scroll.canvas
+        self.config_scrollbar = self.config_scroll.scrollbar
+        config_frame = self.config_scroll.content
+        self.config_frame = config_frame
+        config_frame.grid_columnconfigure(1, weight=1, minsize=220)
+        config_frame.grid_columnconfigure(3, weight=1, minsize=220)
 
         def add_label(row, column, text, provider=None):
             w = tk_label(config_frame, text=text, bg=UI_PANEL_BG)
@@ -789,7 +967,7 @@ class GrokRegisterGUI:
 
         add_label(0, 0, "邮箱服务商:")
         self.email_provider_var = tk.StringVar(value=config.get("email_provider", "duckmail"))
-        self.email_provider_combo = tk_option_menu(config_frame, self.email_provider_var, ["duckmail", "yyds", "cloudflare", "cloudmail"], width=12)
+        self.email_provider_combo = tk_option_menu(config_frame, self.email_provider_var, ["duckmail", "yyds", "cloudflare", "cloudmail", "outlook"], width=12)
         add_field(self.email_provider_combo, 0, 1, sticky=tk.W)
 
         # 记录每个邮箱服务商专属的控件，切换服务商时隐藏无关项。
@@ -797,6 +975,7 @@ class GrokRegisterGUI:
         self._yyds_widgets = []
         self._cf_widgets = []
         self._cloudmail_widgets = []
+        self._outlook_widgets = []
         self.email_provider_var.trace_add("write", self._on_provider_change)
 
         add_label(0, 2, "注册数量:")
@@ -1023,6 +1202,29 @@ class GrokRegisterGUI:
         self.proxy_protocol_start_timeout_spinbox = tk.Spinbox(config_frame, from_=3, to=60, width=8, textvariable=self.proxy_protocol_start_timeout_var, bg=UI_ENTRY_BG, fg=UI_FG, insertbackground=UI_FG, buttonbackground=UI_BUTTON_BG, relief=tk.SOLID)
         add_field(self.proxy_protocol_start_timeout_spinbox, 20, 1, sticky=tk.W)
 
+        add_label(21, 0, "YYDS API Key:")
+        self.yyds_api_key_var = tk.StringVar(value=str(config.get("yyds_api_key", "")))
+        self.yyds_api_key_entry = tk_entry(config_frame, textvariable=self.yyds_api_key_var, width=34, show="*")
+        add_field(self.yyds_api_key_entry, 21, 1)
+
+        add_label(21, 2, "YYDS JWT:")
+        self.yyds_jwt_var = tk.StringVar(value=str(config.get("yyds_jwt", "")))
+        self.yyds_jwt_entry = tk_entry(config_frame, textvariable=self.yyds_jwt_var, width=34, show="*")
+        add_field(self.yyds_jwt_entry, 21, 3)
+
+        add_label(22, 0, "Outlook 邮箱池:", provider=self._outlook_widgets)
+        self.outlook_accounts_file_var = tk.StringVar(
+            value=str(config.get("outlook_accounts_file", "./output/mailboxes/outlook-accounts.txt"))
+        )
+        self.outlook_accounts_file_entry = tk_entry(
+            config_frame, textvariable=self.outlook_accounts_file_var, width=34
+        )
+        add_field(self.outlook_accounts_file_entry, 22, 1, provider=self._outlook_widgets)
+        self.outlook_pool_btn = tk_button(
+            config_frame, text="管理 Outlook 邮箱池", command=self.manage_outlook_mailbox_pool
+        )
+        add_field(self.outlook_pool_btn, 22, 3, sticky=tk.W, provider=self._outlook_widgets)
+
         btn_frame = tk.Frame(main_frame, bg=UI_BG)
         btn_frame.grid(row=1, column=0, sticky=tk.EW, pady=(0, 6))
         self.start_btn = tk_button(btn_frame, text="开始注册", command=self.start_registration)
@@ -1038,7 +1240,7 @@ class GrokRegisterGUI:
         tk_label(status_frame, text="状态: ").pack(side=tk.LEFT)
         self.status_label = tk.Label(status_frame, textvariable=self.status_var, bg=UI_BG, fg="green")
         self.status_label.pack(side=tk.LEFT)
-        self.stats_var = tk.StringVar(value="成功: 0 | 失败: 0 | 待恢复: 0 | 后处理警告: 0")
+        self.stats_var = tk.StringVar(value="成功: 0 | 失败: 0 | 结果不确定: 0 | 待恢复: 0 | 后处理警告: 0")
         tk.Label(status_frame, textvariable=self.stats_var, bg=UI_BG, fg=UI_FG).pack(side=tk.RIGHT)
         log_frame = tk.LabelFrame(
             main_frame,
@@ -1051,6 +1253,7 @@ class GrokRegisterGUI:
             borderwidth=1,
         )
         log_frame.grid(row=3, column=0, sticky=tk.NSEW)
+        self.log_frame = log_frame
         log_frame.grid_columnconfigure(0, weight=1)
         log_frame.grid_rowconfigure(0, weight=1)
         self.log_text = scrolledtext.ScrolledText(
@@ -1083,13 +1286,28 @@ class GrokRegisterGUI:
                 elif kind == "clear_log":
                     self.log_text.delete(1.0, tk.END)
                 elif kind == "stats":
-                    self.stats_var.set(f"成功: {event[1]} | 失败: {event[2]} | 待恢复: {event[3]} | 后处理警告: {event[4]}")
+                    self.stats_var.set(
+                        f"成功: {event[1]} | 失败: {event[2]} | 结果不确定: {event[3]} | "
+                        f"待恢复: {event[4]} | 后处理警告: {event[5]}"
+                    )
                 elif kind == "running":
                     running = bool(event[1])
-                    self.start_btn.config(state=tk.DISABLED if running else tk.NORMAL)
+                    with self.operation_lock:
+                        testing = bool(self.proxy_test_running)
+                    self.start_btn.config(state=tk.DISABLED if (running or testing) else tk.NORMAL)
+                    self.proxy_test_btn.config(state=tk.DISABLED if (running or testing) else tk.NORMAL)
                     self.stop_btn.config(state=tk.NORMAL if running else tk.DISABLED)
-                    self.status_var.set("运行中..." if running else "就绪")
-                    self.status_label.config(foreground="blue" if running else "green")
+                    self.status_var.set("运行中..." if running else ("测试代理池..." if testing else "就绪"))
+                    self.status_label.config(foreground="blue" if (running or testing) else "green")
+                elif kind == "proxy_test":
+                    testing = bool(event[1])
+                    with self.operation_lock:
+                        running = bool(self.is_running)
+                    self.start_btn.config(state=tk.DISABLED if (running or testing) else tk.NORMAL)
+                    self.proxy_test_btn.config(state=tk.DISABLED if (running or testing) else tk.NORMAL)
+                    if not running:
+                        self.status_var.set("测试代理池..." if testing else "就绪")
+                        self.status_label.config(foreground="blue" if testing else "green")
                 elif kind == "error":
                     messagebox.showerror(event[1], event[2])
         except queue.Empty:
@@ -1112,11 +1330,20 @@ class GrokRegisterGUI:
         self.ui_queue.put(("clear_log",))
 
     def update_stats(self):
-        self.ui_queue.put(("stats", self.success_count, self.fail_count, self.registered_unsaved_count, self.postprocess_warning_count))
+        self.ui_queue.put((
+            "stats",
+            self.success_count,
+            self.fail_count,
+            self.uncertain_count,
+            self.registered_unsaved_count,
+            self.postprocess_warning_count,
+        ))
 
     def _set_running_ui(self, running):
-        self.is_running = bool(running)
-        self.ui_queue.put(("running", self.is_running))
+        with self.operation_lock:
+            self.is_running = bool(running)
+            current = self.is_running
+        self.ui_queue.put(("running", current))
 
 
     def should_stop(self):
@@ -1125,6 +1352,7 @@ class GrokRegisterGUI:
     def _reset_batch_counters(self):
         self.success_count = 0
         self.fail_count = 0
+        self.uncertain_count = 0
         self.registered_unsaved_count = 0
         self.postprocess_warning_count = 0
 
@@ -1142,6 +1370,7 @@ class GrokRegisterGUI:
             "yyds": self._yyds_widgets,
             "cloudflare": self._cf_widgets,
             "cloudmail": self._cloudmail_widgets,
+            "outlook": self._outlook_widgets,
         }
         for key, widgets in groups.items():
             for widget in widgets:
@@ -1150,10 +1379,126 @@ class GrokRegisterGUI:
                 else:
                     widget.grid_remove()
 
+    def manage_outlook_mailbox_pool(self):
+        from outlook_mailbox_pool import (
+            inspect_outlook_mailbox_pool, load_outlook_mailbox_pool,
+            probe_outlook_mailbox_pool_data, save_outlook_mailbox_pool,
+        )
+        path = self.outlook_accounts_file_var.get().strip() or "./output/mailboxes/outlook-accounts.txt"
+        self.outlook_accounts_file_var.set(path)
+        window = tk.Toplevel(self.root)
+        window.title("Outlook 邮箱池")
+        window.geometry("860x560")
+        window.configure(bg=UI_BG)
+        window.transient(self.root)
+
+        tk_label(
+            window,
+            text="每行格式: email----password----clientId----refreshToken----auto/imap/graph",
+        ).pack(anchor=tk.W, padx=12, pady=(12, 4))
+        tk_label(window, text="文件: %s" % path, fg=UI_MUTED_FG).pack(
+            anchor=tk.W, padx=12, pady=(0, 8)
+        )
+        editor = scrolledtext.ScrolledText(
+            window,
+            bg="#111111", fg=UI_FG, insertbackground=UI_FG,
+            height=24, wrap=tk.NONE, undo=True,
+        )
+        editor.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+        status_var = tk.StringVar(value="")
+        tk_label(window, textvariable=status_var, fg=UI_MUTED_FG).pack(
+            anchor=tk.W, padx=12, pady=(0, 8)
+        )
+
+        def update_summary(_event=None):
+            summary = inspect_outlook_mailbox_pool(editor.get("1.0", tk.END))
+            status_var.set(
+                "有效: %s | 无效: %s | 重复: %s"
+                % (summary["count"], summary["invalid"], len(summary["duplicates"]))
+            )
+
+        def save_pool():
+            try:
+                summary = save_outlook_mailbox_pool(path, editor.get("1.0", tk.END))
+                update_summary()
+                self.log("[*] Outlook 邮箱池已保存: %s 个账号" % summary["count"])
+            except Exception as exc:
+                messagebox.showerror("Outlook 邮箱池保存失败", str(exc), parent=window)
+
+        def load_pool():
+            try:
+                current = load_outlook_mailbox_pool(path)
+                editor.delete("1.0", tk.END)
+                editor.insert("1.0", current.get("data", ""))
+                update_summary()
+            except Exception as exc:
+                status_var.set("读取失败: %s" % exc)
+
+        def test_pool():
+            if self.is_running or self.registration_starting:
+                messagebox.showwarning(
+                    "Outlook 邮箱池测试", "注册任务启动或运行期间不能测试邮箱池", parent=window
+                )
+                return
+            data = editor.get("1.0", tk.END)
+            status_var.set("正在测试 Outlook 邮箱访问能力…")
+
+            def worker():
+                try:
+                    summary = probe_outlook_mailbox_pool_data(data)
+                except Exception as exc:
+                    def show_error(error=str(exc)):
+                        status_var.set("测试失败: %s" % error)
+                        messagebox.showerror("Outlook 邮箱池测试失败", error, parent=window)
+                    window.after(0, show_error)
+                    return
+
+                def show_result():
+                    status_var.set(
+                        "健康: %s/%s | IMAP: %s | Graph: %s"
+                        % (summary["healthy"], summary["count"], summary["imap"], summary["graph"])
+                    )
+                    lines = []
+                    for item in summary["results"]:
+                        imap_state = "OK" if item["imap"]["ok"] else "FAIL"
+                        graph_state = "OK" if item["graph"]["ok"] else "FAIL"
+                        lines.append(
+                            "%s [%s] IMAP=%s Graph=%s"
+                            % (item["email"], item["mode"], imap_state, graph_state)
+                        )
+                    messagebox.showinfo(
+                        "Outlook 邮箱池测试",
+                        "健康: %s/%s\n\n%s"
+                        % (summary["healthy"], summary["count"], "\n".join(lines[:100])),
+                        parent=window,
+                    )
+                window.after(0, show_result)
+
+            threading.Thread(target=worker, name="outlook-mailbox-gui-test", daemon=True).start()
+
+        editor.bind("<KeyRelease>", update_summary)
+        load_pool()
+        buttons = tk.Frame(window, bg=UI_BG)
+        buttons.pack(fill=tk.X, padx=12, pady=(0, 12))
+        tk_button(buttons, text="保存邮箱池", command=save_pool).pack(side=tk.LEFT)
+        tk_button(buttons, text="重新加载", command=load_pool).pack(side=tk.LEFT, padx=(8, 0))
+        tk_button(buttons, text="测试邮箱池", command=test_pool).pack(side=tk.LEFT, padx=(8, 0))
+        tk_button(buttons, text="关闭", command=window.destroy).pack(side=tk.RIGHT)
+
     def test_proxy_pool(self):
-        if self.is_running:
-            self.log("[!] 注册任务运行期间不能手动测试代理池")
+        with self.operation_lock:
+            if self.is_running or self.registration_starting:
+                reason = "[!] 注册任务启动或运行期间不能手动测试代理池"
+            elif self.proxy_test_running:
+                reason = "[!] 代理池测试已在运行"
+            else:
+                reason = ""
+                self.proxy_test_running = True
+        if reason:
+            self.log(reason)
             return
+        self.ui_queue.put(("proxy_test", True))
+
         def worker():
             try:
                 candidate = dict(config)
@@ -1182,11 +1527,31 @@ class GrokRegisterGUI:
                 self.log("[*] 代理池测试完成: %s/%s 个节点健康" % (healthy, len(results)))
             except Exception as exc:
                 self.log("[!] 代理池测试失败: %s" % exc)
-        threading.Thread(target=worker, name="proxy-pool-gui-test", daemon=True).start()
+            finally:
+                with self.operation_lock:
+                    self.proxy_test_running = False
+                self.ui_queue.put(("proxy_test", False))
+
+        thread = threading.Thread(target=worker, name="proxy-pool-gui-test", daemon=True)
+        try:
+            thread.start()
+        except Exception:
+            with self.operation_lock:
+                self.proxy_test_running = False
+            self.ui_queue.put(("proxy_test", False))
+            raise
 
     def start_registration(self):
-        if self.is_running:
-            self.log("[!] 当前已有任务在运行")
+        with self.operation_lock:
+            if self.is_running or self.registration_starting:
+                reason = "[!] 当前已有任务正在启动或运行"
+            elif self.proxy_test_running:
+                reason = "[!] 代理池测试进行中，暂不能启动注册"
+            else:
+                reason = ""
+                self.registration_starting = True
+        if reason:
+            self.log(reason)
             return
 
         config["email_provider"] = self.email_provider_var.get().strip() or "duckmail"
@@ -1209,6 +1574,9 @@ class GrokRegisterGUI:
         config["cloudmail_api_base"] = self.cloudmail_api_base_var.get().strip()
         config["cloudmail_public_token"] = self.cloudmail_public_token_var.get().strip()
         config["cloudmail_domains"] = self.cloudmail_domains_var.get().strip()
+        config["outlook_accounts_file"] = (
+            self.outlook_accounts_file_var.get().strip() or "./output/mailboxes/outlook-accounts.txt"
+        )
         config["grok2api_auto_add_local"] = bool(self.grok2api_local_auto_var.get())
         config["grok2api_local_token_file"] = self.grok2api_local_file_var.get().strip()
         config["grok2api_pool_name"] = self.grok2api_pool_name_var.get().strip() or "ssoBasic"
@@ -1237,9 +1605,15 @@ class GrokRegisterGUI:
             config.clear()
             config.update(validated)
             save_config()
-        except (ValueError, ConfigError) as exc:
+            count = resolve_registration_count(count, log_callback=self.log)
+        except (ValueError, ConfigError, RuntimeError) as exc:
+            with self.operation_lock:
+                self.registration_starting = False
             self.log(f"[!] 配置无效或保存失败: {exc}")
             return
+        with self.operation_lock:
+            self.registration_starting = False
+            self.is_running = True
         self.stop_requested = False
         self._reset_batch_counters()
         self.results = []
@@ -1248,7 +1622,7 @@ class GrokRegisterGUI:
             _accounts_data_dir(), f"accounts_{now}.txt"
         )
         self.update_stats()
-        self._set_running_ui(True)
+        self.ui_queue.put(("running", True))
         self.log(f"[*] 配置已保存，开始执行。目标数量: {count}")
         if config.get("multi_thread_enabled") and int(config.get("multi_thread_workers", 4)) > 1 and count > 1:
             actual_workers = min(count, int(config.get("multi_thread_workers", 4)))
@@ -1270,6 +1644,7 @@ class GrokRegisterGUI:
         def observer(batch, account, output):
             self.success_count = batch.success_count
             self.fail_count = batch.fail_count
+            self.uncertain_count = batch.uncertain_count
             self.registered_unsaved_count = batch.registered_unsaved_count
             self.postprocess_warning_count = batch.postprocess_warning_count
             if account is not None:
@@ -1285,6 +1660,7 @@ class GrokRegisterGUI:
             )
             self.success_count = batch.success_count
             self.fail_count = batch.fail_count
+            self.uncertain_count = batch.uncertain_count
             self.registered_unsaved_count = batch.registered_unsaved_count
             self.postprocess_warning_count = batch.postprocess_warning_count
             self.update_stats()
@@ -1363,6 +1739,11 @@ def main_cli():
         cli_log(f"[!] {exc}")
         return
     count = int(config.get("register_count", 1) or 1)
+    try:
+        count = resolve_registration_count(count, log_callback=cli_log)
+    except Exception as exc:
+        cli_log(f"[!] Outlook 邮箱池校验失败: {exc}")
+        return
     cli_log("[*] CLI 已加载配置")
     cli_log(f"[*] 当前邮箱服务商: {config.get('email_provider', 'duckmail')} | 注册数量: {count}")
     if config.get("multi_thread_enabled") and int(config.get("multi_thread_workers", 4)) > 1 and count > 1:

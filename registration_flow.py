@@ -23,6 +23,7 @@ STAGE_LEASE_ACQUIRE = "lease_acquire"
 STAGE_BROWSER_START = "browser_start"
 STAGE_PAGE_OPEN = "page_open"
 STAGE_EMAIL_SUBMIT = "email_submit"
+STAGE_CODE_WAIT = "code_wait"
 STAGE_CODE_SUBMIT = "code_submit"
 STAGE_PROFILE_SUBMIT = "profile_submit"
 STAGE_SSO_WAIT = "sso_wait"
@@ -49,11 +50,23 @@ def registration_retry_disposition(stage, error=None):
     stage = str(stage or STAGE_LEASE_ACQUIRE)
     if stage in (STAGE_LEASE_ACQUIRE, STAGE_BROWSER_START, STAGE_PAGE_OPEN):
         return SAFE_NEW_LEASE
+    if stage == STAGE_CODE_WAIT:
+        return SAME_LEASE_RECOVERY
     if stage in (STAGE_EMAIL_SUBMIT, STAGE_CODE_SUBMIT, STAGE_PROFILE_SUBMIT, STAGE_SSO_WAIT):
         return OUTCOME_UNCERTAIN
     if stage in (STAGE_ACCOUNT_CONFIRMED, STAGE_POSTPROCESS):
         return NO_RETRY
     return OUTCOME_UNCERTAIN
+
+
+class VerificationCodeUnavailable(RuntimeError):
+    """Mailbox polling timed out before any verification-code submission began."""
+    pass
+
+
+class VerificationSubmissionUnconfirmed(RuntimeError):
+    """A verification code was entered, but the browser could not confirm the next stage."""
+    pass
 
 
 @dataclass
@@ -84,6 +97,7 @@ class RegistrationOperations:
     retry_exception: type
     internal_stage_markers: bool = False
     screen_sso: Optional[Callable[[str, str], Any]] = None
+    preflight_mail: Optional[Callable[[], Any]] = None
 
 
 @dataclass
@@ -171,28 +185,30 @@ def register_one_account(callbacks, ops, enable_nsfw=True, max_mail_retry=3):
             _set_registration_stage(STAGE_EMAIL_SUBMIT)
         email, dev_token = ops.fill_email_and_submit()
         callbacks.log(f"[*] 邮箱: {email}")
-        callbacks.log(f"[Debug] 邮箱credential(jwt): {dev_token}")
+        callbacks.log("[Debug] 邮箱服务凭据已创建（内容已隐藏）")
         if not ops.save_mail_credential(email, dev_token):
             callbacks.log("[!] 邮箱凭据保存失败，注册继续，但已明确记录该异常")
         callbacks.log("[*] 3. 拉取验证码")
         try:
             if not ops.internal_stage_markers:
-                _set_registration_stage(STAGE_CODE_SUBMIT)
+                _set_registration_stage(STAGE_CODE_WAIT)
             code = ops.fill_code_and_submit(email, dev_token)
             mail_ok = True
             break
-        except Exception as exc:
-            message = str(exc)
-            if ("未收到验证码" in message or "验证码" in message) and mail_try < max_mail_retry and not is_proxy_transport_exception(exc):
-                callbacks.log(f"[!] 本邮箱未取到验证码，自动更换新邮箱重试: {message}")
-                _set_registration_stage(STAGE_BROWSER_START)
+        except VerificationCodeUnavailable as exc:
+            if mail_try < max_mail_retry:
+                callbacks.log(f"[!] 本邮箱在等待阶段未取到验证码，保持当前代理租约并更换邮箱重试: {exc}")
+                # Keep the code_wait disposition while recovering. If browser
+                # restart itself fails, the outer retry engine must not treat
+                # this as a safe point for acquiring a different proxy lease.
+                _set_registration_stage(STAGE_CODE_WAIT)
                 ops.restart_browser()
                 ops.sleep(1)
                 continue
             raise
     if not mail_ok:
         raise RuntimeError("验证码阶段失败，已达到最大重试次数")
-    callbacks.log(f"[*] 验证码: {code}")
+    callbacks.log("[*] 验证码已获取并提交（内容已隐藏）")
     callbacks.log("[*] 4. 填写资料")
     if not ops.internal_stage_markers:
         _set_registration_stage(STAGE_PROFILE_SUBMIT)
@@ -333,6 +349,22 @@ def _run_batch_legacy(settings, callbacks, observer, ops):
     return result
 
 
+def _preflight_mail_after_lease(callbacks, ops):
+    preflight = getattr(ops, "preflight_mail", None)
+    if callable(preflight):
+        return preflight()
+    if str(app_config.get("email_provider", "") or "").strip().lower() != "cloudmail":
+        return True
+    # Backward-compatible fallback for callers that have not injected the
+    # mail operation yet. Parallel workers always inject their isolated module.
+    import mail_service
+    return mail_service.cloudmail_preflight(
+        log_callback=callbacks.log,
+        cancel_callback=callbacks.cancelled,
+        defer_until_slot=False,
+    )
+
+
 def _run_batch_managed(settings, callbacks, observer, ops):
     result = BatchResult(); retry_count_for_slot = 0; last_cleanup_success_count = 0; first_browser_start = True
     try:
@@ -343,6 +375,7 @@ def _run_batch_managed(settings, callbacks, observer, ops):
             _set_registration_stage(STAGE_LEASE_ACQUIRE)
             try:
                 begin_registration_slot(slot_index=slot_index, attempt_index=attempt_index, worker_key=threading.current_thread().name, log=callbacks.log, cancel_callback=callbacks.cancelled)
+                _preflight_mail_after_lease(callbacks, ops)
                 _set_registration_stage(STAGE_BROWSER_START)
                 if first_browser_start or ops.browser_missing():
                     ops.start_browser(); callbacks.log("[*] 浏览器已启动"); first_browser_start = False
