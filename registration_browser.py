@@ -25,6 +25,11 @@ TURNSTILE_WAITING = "WAITING"
 TURNSTILE_SOLVED = "SOLVED"
 TURNSTILE_FAILED = "FAILED"
 
+# 自动点击 Turnstile 复选框：先给 managed 模式留出自动完成的时间，再按间隔有限次尝试。
+TURNSTILE_AUTOCLICK_GRACE_SEC = 2.5
+TURNSTILE_AUTOCLICK_INTERVAL_SEC = 5.0
+TURNSTILE_AUTOCLICK_MAX_ATTEMPTS = 4
+
 
 def _mark_registration_stage(stage):
     # Function-local import avoids an import-time cycle while keeping the browser module reusable.
@@ -1071,7 +1076,7 @@ try {
 
 
 def _wait_for_turnstile(log_callback=None, cancel_callback=None, timeout=60):
-    """等待 Turnstile 自动完成或由用户在当前浏览器窗口完成。"""
+    """等待 Turnstile 自动完成、自动点击成功或由用户在当前浏览器窗口完成。"""
     global page
     if page is None:
         raise Exception("页面未就绪，无法执行 Turnstile")
@@ -1081,6 +1086,10 @@ def _wait_for_turnstile(log_callback=None, cancel_callback=None, timeout=60):
     started = time.time()
     last_state = None
     last_log_at = 0.0
+    autoclick_enabled = _turnstile_autoclick_enabled()
+    autoclick_attempts = 0
+    last_autoclick_at = None
+    autoclick_diagnostics_logged = False
 
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
@@ -1114,6 +1123,27 @@ def _wait_for_turnstile(log_callback=None, cancel_callback=None, timeout=60):
             last_log_at = now
             last_state = status
 
+        if (
+            autoclick_enabled
+            and status == TURNSTILE_WAITING
+            and autoclick_attempts < TURNSTILE_AUTOCLICK_MAX_ATTEMPTS
+            and now - started >= TURNSTILE_AUTOCLICK_GRACE_SEC
+            and (last_autoclick_at is None or now - last_autoclick_at >= TURNSTILE_AUTOCLICK_INTERVAL_SEC)
+        ):
+            rect, diagnostics = _turnstile_widget_probe()
+            if rect is not None:
+                last_autoclick_at = now
+                if _click_turnstile_widget(
+                    rect, log_callback=log_callback, cancel_callback=cancel_callback
+                ):
+                    autoclick_attempts += 1
+            elif log_callback and not autoclick_diagnostics_logged:
+                autoclick_diagnostics_logged = True
+                log_callback(
+                    "[Debug] 未找到可点击的 Cloudflare 组件: "
+                    + _format_turnstile_candidates(diagnostics)
+                )
+
         sleep_with_cancel(min(1.0, max(deadline - now, 0.0)), cancel_callback)
 
     raise Exception("Turnstile 验证超时")
@@ -1126,6 +1156,419 @@ def getTurnstileToken(log_callback=None, cancel_callback=None, timeout=60):
         cancel_callback=cancel_callback,
         timeout=timeout,
     )
+
+
+def _turnstile_autoclick_enabled():
+    """是否允许自动点击 Turnstile 复选框；缺少配置时保持开启。"""
+    try:
+        return bool(config.get("turnstile_autoclick_enabled", True))
+    except Exception:
+        pass
+    try:
+        import app_config
+
+        return bool(app_config.config.get("turnstile_autoclick_enabled", True))
+    except Exception:
+        return True
+
+
+_TURNSTILE_PROBE_JS = r"""
+try {
+  function isVisible(node) {
+    if (!node) return false;
+    const style = window.getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+  function describe(node) {
+    const rect = node.getBoundingClientRect();
+    return {
+      tag: String(node.tagName || '').toLowerCase(),
+      src: String((node.getAttribute && node.getAttribute('src')) || '').slice(0, 100),
+      w: Math.round(rect.width),
+      h: Math.round(rect.height),
+      visible: isVisible(node),
+    };
+  }
+  function turnstileLike(node) {
+    if (!node) return false;
+    if (String(node.tagName || '').toUpperCase() !== 'IFRAME') return true;
+    const src = String(node.getAttribute('src') || '');
+    return /turnstile|challenges\.cloudflare\.com/i.test(src);
+  }
+  function lightCandidates(root, out) {
+    let nodes = [];
+    try { nodes = root.querySelectorAll('iframe, div.cf-turnstile, [data-sitekey]'); } catch (e) { nodes = []; }
+    for (const node of nodes) if (turnstileLike(node)) out.push(node);
+  }
+  function deepCandidates(root, out, depth) {
+    if (!root || depth > 3) return;
+    lightCandidates(root, out);
+    let hosts = [];
+    try { hosts = root.querySelectorAll('*'); } catch (e) { hosts = []; }
+    for (const host of hosts) if (host.shadowRoot) deepCandidates(host.shadowRoot, out, depth + 1);
+    let frames = [];
+    try { frames = root.querySelectorAll('iframe'); } catch (e) { frames = []; }
+    for (const frame of frames) {
+      let doc = null;
+      try { doc = frame.contentDocument; } catch (e) { doc = null; }
+      if (doc) deepCandidates(doc, out, depth + 1);
+    }
+  }
+  function firstClickable(nodes) {
+    for (const node of nodes) {
+      const rect = node.getBoundingClientRect();
+      if (isVisible(node) && rect.width >= 24 && rect.height >= 24) return {node: node, rect: rect};
+    }
+    return null;
+  }
+
+  const light = [];
+  lightCandidates(document, light);
+  let hit = firstClickable(light);
+  if (!hit) {
+    const deep = [];
+    deepCandidates(document, deep, 0);
+    hit = firstClickable(deep);
+  }
+
+  const candidates = [];
+  for (const node of light.slice(0, 5)) candidates.push(describe(node));
+  if (!hit) {
+    let frames = [];
+    try { frames = Array.from(document.querySelectorAll('iframe')).slice(0, 6); } catch (e) { frames = []; }
+    for (const frame of frames) {
+      const item = describe(frame);
+      const seen = candidates.some((entry) => entry.src === item.src && entry.w === item.w && entry.h === item.h);
+      if (!seen) candidates.push(item);
+    }
+    return JSON.stringify({rect: null, candidates: candidates});
+  }
+
+  const target = hit.node;
+  let rect = hit.rect;
+  const pointX = () => rect.left + Math.min(Math.max(rect.width * 0.08, 12), 32);
+  const pointY = () => rect.top + rect.height / 2;
+  const outside = () => pointX() < 0 || pointY() < 0 || pointX() > window.innerWidth || pointY() > window.innerHeight;
+  if (outside() && typeof target.scrollIntoView === 'function') {
+    target.scrollIntoView({block: 'center', inline: 'nearest'});
+    rect = target.getBoundingClientRect();
+  }
+  if (rect.width < 24 || rect.height < 24 || outside()) {
+    return JSON.stringify({rect: null, candidates: candidates});
+  }
+  return JSON.stringify({
+    rect: {x: rect.left, y: rect.top, w: rect.width, h: rect.height},
+    candidates: candidates,
+  });
+} catch (e) {
+  return JSON.stringify({rect: null, candidates: [], error: String(e)});
+}
+"""
+
+
+def _format_turnstile_candidates(candidates):
+    if not candidates:
+        return "页面上没有 turnstile / cloudflare iframe"
+    parts = []
+    for item in candidates[:5]:
+        if isinstance(item, str):
+            parts.append(item[:120])
+            continue
+        if not isinstance(item, dict):
+            continue
+        parts.append(
+            "{tag} {w}x{h}{hidden} {src}".format(
+                tag=str(item.get("tag") or "?"),
+                w=item.get("w", "?"),
+                h=item.get("h", "?"),
+                hidden="" if item.get("visible") else "(hidden)",
+                src=str(item.get("src") or "")[:80],
+            )
+        )
+    return " | ".join(parts) if parts else "无可用诊断信息"
+
+
+def _turnstile_js_probe():
+    """页面 JS 探测：能看到的候选组件（不穿透 closed shadow root）。"""
+    if page is None:
+        return None, []
+    try:
+        raw = page.run_js(_TURNSTILE_PROBE_JS)
+    except Exception:
+        return None, []
+    try:
+        payload = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None, []
+    if not isinstance(payload, dict):
+        return None, []
+    diagnostics = payload.get("candidates")
+    if not isinstance(diagnostics, list):
+        diagnostics = []
+    rect = payload.get("rect")
+    if not isinstance(rect, dict):
+        return None, diagnostics
+    try:
+        x = float(rect["x"])
+        y = float(rect["y"])
+        width = float(rect["w"])
+        height = float(rect["h"])
+    except (KeyError, TypeError, ValueError):
+        return None, diagnostics
+    if width < 24 or height < 24:
+        return None, diagnostics
+    return {"x": x, "y": y, "w": width, "h": height}, diagnostics
+
+
+_TURNSTILE_FRAME_RE = re.compile(r"turnstile|challenges\.cloudflare\.com", re.IGNORECASE)
+_TURNSTILE_MIN_SIDE = 24.0
+_TURNSTILE_PIERCED_NODE_LIMIT = 20000
+
+
+def _iter_cdp_frames(node, out):
+    if not isinstance(node, dict):
+        return
+    frame = node.get("frame")
+    if isinstance(frame, dict):
+        out.append(frame)
+    for child in node.get("childFrames") or []:
+        _iter_cdp_frames(child, out)
+
+
+def _cdp_viewport_size():
+    try:
+        metrics = page.run_cdp("Page.getLayoutMetrics") or {}
+    except Exception:
+        return None
+    viewport = metrics.get("cssVisualViewport") or metrics.get("visualViewport") or {}
+    try:
+        return float(viewport["clientWidth"]), float(viewport["clientHeight"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _cdp_frame_owner_backend_id(frame_id):
+    try:
+        owner = page.run_cdp("DOM.getFrameOwner", frameId=frame_id) or {}
+    except Exception:
+        return None
+    backend_id = owner.get("backendNodeId")
+    return int(backend_id) if backend_id else None
+
+
+def _cdp_backend_box(backend_id):
+    try:
+        payload = page.run_cdp("DOM.getBoxModel", backendNodeId=backend_id) or {}
+    except Exception:
+        return None
+    model = payload.get("model") or {}
+    quad = model.get("border") or model.get("content")
+    if not quad or len(quad) < 8:
+        return None
+    try:
+        xs = [float(quad[0]), float(quad[2]), float(quad[4]), float(quad[6])]
+        ys = [float(quad[1]), float(quad[3]), float(quad[5]), float(quad[7])]
+    except (TypeError, ValueError):
+        return None
+    left, top = min(xs), min(ys)
+    return {"x": left, "y": top, "w": max(xs) - left, "h": max(ys) - top}
+
+
+def _cdp_frame_rect(frame_id, viewport):
+    """frame owner 的视口坐标矩形；必要时先滚动进视口。"""
+    backend_id = _cdp_frame_owner_backend_id(frame_id)
+    if backend_id is None:
+        return None
+    rect = _cdp_backend_box(backend_id)
+    if rect is None:
+        return None
+    if viewport and not _click_point_inside(rect, viewport):
+        try:
+            page.run_cdp("DOM.scrollIntoViewIfNeeded", backendNodeId=backend_id)
+        except Exception:
+            return rect
+        rect = _cdp_backend_box(backend_id) or rect
+    return rect
+
+
+def _click_point_inside(rect, viewport):
+    if not viewport:
+        return True
+    width, height = viewport
+    point_x = rect["x"] + min(max(rect["w"] * 0.08, 12.0), 32.0)
+    point_y = rect["y"] + rect["h"] / 2
+    return 0.0 <= point_x <= width and 0.0 <= point_y <= height
+
+
+def _turnstile_frame_probe():
+    """CDP frame tree 探测：可穿透 closed shadow root 与未设置 src 的 iframe。"""
+    if page is None:
+        return None, []
+    try:
+        tree = page.run_cdp("Page.getFrameTree") or {}
+    except Exception:
+        return None, []
+    frames = []
+    _iter_cdp_frames(tree.get("frameTree") or {}, frames)
+    if not frames:
+        return None, []
+    main_id = str(frames[0].get("id") or "")
+    viewport = _cdp_viewport_size()
+    diagnostics = []
+    matched = []
+    for frame in frames:
+        frame_id = str(frame.get("id") or "")
+        url = str(frame.get("url") or "")
+        if not frame_id or frame_id == main_id or not _TURNSTILE_FRAME_RE.search(url):
+            continue
+        matched.append((frame_id, url))
+    matched.sort(key=lambda item: 0 if "turnstile" in item[1].lower() else 1)
+    for frame_id, url in matched:
+        rect = _cdp_frame_rect(frame_id, viewport)
+        if rect is None:
+            diagnostics.append(f"frame {url[:90]} (no box)")
+            continue
+        diagnostics.append(
+            "frame {url} @{w}x{h}".format(
+                url=url[:90], w=int(rect["w"]), h=int(rect["h"])
+            )
+        )
+        if (
+            rect["w"] >= _TURNSTILE_MIN_SIDE
+            and rect["h"] >= _TURNSTILE_MIN_SIDE
+            and _click_point_inside(rect, viewport)
+        ):
+            return rect, diagnostics
+    return None, diagnostics
+
+
+def _turnstile_widget_probe():
+    """只读探测：返回 (rect, diagnostics)；先看页面 DOM，再看 CDP frame tree / pierced DOM。"""
+    rect, diagnostics = _turnstile_js_probe()
+    if rect is not None:
+        return rect, diagnostics
+    combined = list(diagnostics)
+    frame_rect, frame_diagnostics = _turnstile_frame_probe()
+    combined.extend(frame_diagnostics)
+    if frame_rect is not None:
+        return frame_rect, combined
+    pierced_rect, pierced_diagnostics = _turnstile_pierced_probe()
+    combined.extend(pierced_diagnostics)
+    if pierced_rect is not None:
+        return pierced_rect, combined
+    return None, combined
+
+
+def _turnstile_pierced_probe():
+    """CDP pierced DOM 探测：可穿透 closed shadow root（当前 Cloudflare 组件的真实渲染方式）。"""
+    if page is None:
+        return None, []
+    try:
+        document = page.run_cdp("DOM.getDocument", depth=-1, pierce=True) or {}
+    except Exception:
+        return None, []
+    nodes = []
+    _walk_pierced_nodes(document.get("root") or {}, nodes)
+    viewport = _cdp_viewport_size()
+    diagnostics = []
+    for node in nodes:
+        if str(node.get("nodeName") or "").upper() != "IFRAME":
+            continue
+        src = _pierced_node_attr(node, "src")
+        if not _TURNSTILE_FRAME_RE.search(src):
+            continue
+        backend_id = node.get("backendNodeId")
+        rect = _cdp_backend_box(backend_id) if backend_id else None
+        if rect is None:
+            diagnostics.append(f"pierced iframe {src[:90]} (no box)")
+            continue
+        diagnostics.append(
+            "pierced iframe {url} @{w}x{h}".format(url=src[:90], w=int(rect["w"]), h=int(rect["h"]))
+        )
+        if (
+            rect["w"] >= _TURNSTILE_MIN_SIDE
+            and rect["h"] >= _TURNSTILE_MIN_SIDE
+            and _click_point_inside(rect, viewport)
+        ):
+            return rect, diagnostics
+    return None, diagnostics
+
+
+def _walk_pierced_nodes(node, out, depth=0):
+    """遍历 CDP DOM 节点树，包含 closed shadow root 与子 frame 文档。"""
+    if not isinstance(node, dict) or depth > 64 or len(out) >= _TURNSTILE_PIERCED_NODE_LIMIT:
+        return
+    out.append(node)
+    for child in node.get("children") or []:
+        _walk_pierced_nodes(child, out, depth + 1)
+    for root in node.get("shadowRoots") or []:
+        _walk_pierced_nodes(root, out, depth + 1)
+    content = node.get("contentDocument")
+    if content:
+        _walk_pierced_nodes(content, out, depth + 1)
+
+
+def _pierced_node_attr(node, name):
+    attributes = node.get("attributes") or []
+    for index in range(0, len(attributes) - 1, 2):
+        if str(attributes[index]).lower() == name:
+            return str(attributes[index + 1])
+    return ""
+
+
+def _turnstile_widget_rect():
+    """只读探测 Turnstile 组件的视口矩形；没有可点击的组件时返回 None。"""
+    rect, _diagnostics = _turnstile_widget_probe()
+    return rect
+
+
+def _click_turnstile_widget(rect, log_callback=None, cancel_callback=None):
+    """用真实鼠标事件点击 Turnstile 复选框；坐标事件可穿透跨域 iframe。"""
+    if page is None or not rect:
+        return False
+    target_x = rect["x"] + min(max(rect["w"] * 0.08, 12.0), 32.0) + random.uniform(-2.0, 2.0)
+    target_y = rect["y"] + rect["h"] / 2 + random.uniform(-2.0, 2.0)
+    start_x = target_x - 26.0
+    start_y = target_y + 20.0
+    try:
+        for step in range(1, 6):
+            page.run_cdp(
+                "Input.dispatchMouseEvent",
+                type="mouseMoved",
+                x=start_x + (target_x - start_x) * step / 5.0,
+                y=start_y + (target_y - start_y) * step / 5.0,
+                buttons=0,
+            )
+            sleep_with_cancel(0.02, cancel_callback)
+        page.run_cdp(
+            "Input.dispatchMouseEvent",
+            type="mousePressed",
+            x=target_x,
+            y=target_y,
+            button="left",
+            buttons=1,
+            clickCount=1,
+        )
+        sleep_with_cancel(random.uniform(0.05, 0.12), cancel_callback)
+        page.run_cdp(
+            "Input.dispatchMouseEvent",
+            type="mouseReleased",
+            x=target_x,
+            y=target_y,
+            button="left",
+            buttons=0,
+            clickCount=1,
+        )
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[Debug] Cloudflare 自动点击失败: {exc}")
+        return False
+    if log_callback:
+        log_callback("[*] 已尝试自动点击 Cloudflare 人机验证复选框")
+    return True
+
 
 def build_profile():
     given_name_pool = [

@@ -249,6 +249,7 @@ CLI 读取 `config.json`，通过校验后提示：
 | `email_provider` | `duckmail` / `yyds` / `cloudflare` / `cloudmail` / `outlook` |
 | `register_count` | 本批次注册数量 |
 | `enable_nsfw` | 注册后是否尝试开启 NSFW |
+| `turnstile_autoclick_enabled` | 检测到可见 Turnstile 组件且尚未取得 token 时，是否用真实鼠标事件尝试自动点击复选框，默认 `true` |
 | `sso_risk_gate_enabled` | 入库前是否检查 grok.com `botFlagSource` / `policy=deny`，默认 `true` |
 | `sso_risk_rejected_file` | 被风控隔离的 SSO 记录文件，默认 `./sso_risk_rejected.txt` |
 | `user_agent` | Chromium 和请求使用的 User-Agent |
@@ -593,6 +594,16 @@ CLI 只是不启动 Tk GUI。注册页交互、验证码提交和 SSO cookie 获
 ### GUI 无法启动怎么办？
 
 确认 Python 环境包含 Tkinter。Linux 发行版可能需要单独安装 `python3-tk`。也可以改用 CLI 或 WebUI。
+
+### 等待 Cloudflare 人机验证时会不会自动点击？
+
+会。`turnstile_autoclick_enabled` 默认 `true`：Turnstile 组件已经渲染（可见、尺寸 ≥ 24×24）且尚未取得 token 时，会在 2.5s 宽限期后通过 CDP 真实鼠标事件点击组件左侧复选框，同一轮等待最多 4 次、间隔 5s，不会重置组件或改写页面状态。managed 模式通常在此之前自动完成。设为 `false` 可恢复纯等待行为。
+
+探测分三层：先查页面 DOM（含 open shadow root、同源子 frame），再查 CDP frame tree，最后用 **CDP pierced DOM**（`DOM.getDocument(pierce=True)`）穿透 **closed shadow root**。当前 Cloudflare Turnstile 组件正是渲染在 closed shadow root 里：页面 JS 看不到任何 `iframe` / `.cf-turnstile` / `data-sitekey`，`_read_turnstile_state` 只能看到被注入到 light DOM 的隐藏 `input[name=cf-turnstile-response]`（因此状态是 `WAITING` 且 `visible=False`），只有 pierced DOM 能拿到组件 iframe 的位置。命中后取组件左侧复选框坐标点击，实测在真实交互式组件上点击后 1s 内拿到 token。
+
+若一轮等待里始终没有可点击组件，会输出一次 `[Debug] 未找到可点击的 Cloudflare 组件: ...`，列出候选 iframe / frame 的尺寸、可见性和 src，便于定位页面结构。
+
+自动点击只保证“点击动作送达跨域 iframe”，Cloudflare 仍可能因为出口 IP、指纹或行为特征判定验证失败；此时会按现有逻辑报 `Cloudflare 人机验证失败` 或超时，不会绕过验证。
 
 ### 为什么高级协议节点显示 unavailable？
 

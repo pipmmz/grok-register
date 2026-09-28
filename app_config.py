@@ -44,6 +44,7 @@ DEFAULT_CONFIG = {
     "proxy_pool_subscription_public_only": False,
     "proxy_pool_preflight_enabled": True,
     "enable_nsfw": True,
+    "turnstile_autoclick_enabled": True,
     "sso_risk_gate_enabled": True,
     "sso_risk_rejected_file": "./sso_risk_rejected.txt",
     "register_count": 1,
@@ -126,7 +127,7 @@ def validate_config_structure(raw):
         "enable_nsfw", "sso_risk_gate_enabled", "grok2api_auto_add_local", "grok2api_auto_add_remote",
         "grok2api_allow_legacy_full_save", "cpa_export_enabled",
         "cpa_copy_to_hotload", "cpa_headless", "cpa_force_standalone",
-        "cpa_mint_cookie_inject", "multi_thread_enabled",
+        "cpa_mint_cookie_inject", "multi_thread_enabled", "turnstile_autoclick_enabled",
         "proxy_pool_probe_dual_stack", "proxy_pool_persist_health",
         "proxy_pool_subscription_public_only", "proxy_pool_preflight_enabled",
     )

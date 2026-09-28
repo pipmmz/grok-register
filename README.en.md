@@ -249,6 +249,7 @@ The project performs structural validation at startup and checks fields required
 | `email_provider` | `duckmail` / `yyds` / `cloudflare` / `cloudmail` / `outlook` |
 | `register_count` | Number of registrations in the current batch |
 | `enable_nsfw` | Whether to attempt to enable NSFW after registration |
+| `turnstile_autoclick_enabled` | Whether to auto-click the Turnstile checkbox with real mouse events when a visible widget exists without a token yet; default `true` |
 | `sso_risk_gate_enabled` | Whether to check grok.com `botFlagSource` / `policy=deny` before storage; default `true` |
 | `sso_risk_rejected_file` | File for quarantined SSO records; default `./sso_risk_rejected.txt` |
 | `user_agent` | User-Agent used by Chromium and HTTP requests |
@@ -593,6 +594,16 @@ The CLI only skips the Tk GUI. Registration-page interactions, verification-code
 ### What should I do if the GUI does not start?
 
 Make sure your Python environment includes Tkinter. Linux distributions may require installing `python3-tk` separately. You can also use the CLI or WebUI instead.
+
+### Does the wait for the Cloudflare challenge click the checkbox automatically?
+
+Yes. `turnstile_autoclick_enabled` defaults to `true`: once the Turnstile widget is actually rendered (visible, at least 24×24) and no token exists yet, the flow clicks the checkbox on the left side of the widget with real CDP mouse events after a 2.5s grace period — at most 4 attempts per wait, 5s apart. It never resets the widget or rewrites page state. Managed mode usually finishes on its own before that. Set it to `false` to restore the pure waiting behavior.
+
+The probe runs in three layers: page DOM first (including open shadow roots and same-origin sub-frames), then the CDP frame tree, then the **CDP pierced DOM** (`DOM.getDocument(pierce=True)`) which reaches into **closed shadow roots**. The current Cloudflare Turnstile widget renders inside a closed shadow root: page JS sees no `iframe`, no `.cf-turnstile`, and no `data-sitekey` — `_read_turnstile_state` only sees the hidden `input[name=cf-turnstile-response]` injected into the light DOM (hence `WAITING` with `visible=False`), and only the pierced DOM exposes the widget iframe's geometry. The click then targets the checkbox area on the widget's left side; on a real interactive widget the token arrived within 1s of the click.
+
+If a whole wait finds nothing clickable, one `[Debug] 未找到可点击的 Cloudflare 组件: ...` line is logged with each candidate iframe / frame's size, visibility, and src to help diagnose the page structure.
+
+The auto-click only guarantees that the click reaches the cross-origin iframe. Cloudflare may still reject the challenge based on exit IP, fingerprint, or behavioral signals; in that case the existing `Cloudflare 人机验证失败` error or a timeout is raised and the challenge is never bypassed.
 
 ### Why are advanced-protocol nodes shown as unavailable?
 
