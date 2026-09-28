@@ -255,6 +255,8 @@ The project performs structural validation at startup and checks fields required
 | `user_agent` | User-Agent used by Chromium and HTTP requests |
 | `proxy_mode` | `auto` / `direct` / `single` / `pool` |
 | `proxy` | Single proxy address; in `auto` mode, leave empty for a direct connection |
+| `proxy_pool_manual_entries` | Manually added proxy nodes (next to file/subscription sources); the WebUI can add them |
+| `proxy_pool_disabled_nodes` | Nodes blocked by canonical URI, managed by the WebUI Remove / Restore buttons |
 | `multi_thread_enabled` | Whether concurrent registration is enabled; default `false` |
 | `multi_thread_workers` | Number of concurrent workers, range `1–8` |
 
@@ -440,7 +442,7 @@ Currently supported:
 
 The proxy runtime uses a lazy + idle-cache design: a local runtime is created only when a node is actually selected, probed, or preflighted. Native proxies that need a unified HTTP exit use `LocalProxyBridge`; VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks use sing-box. When the Lease reference count drops to 0, the runtime does not exit immediately by default; it moves into the idle cache. Defaults are `proxy_runtime_idle_ttl_sec=120` and `proxy_runtime_cache_max=32`. The runtime closes when TTL expires, the cache evicts it, or the Manager shuts down. Set `proxy_runtime_idle_ttl_sec=0` to restore immediate shutdown at zero references.
 
-Within a single account attempt, the browser, email, NSFW, and default CPA all stay on the same Lease. While waiting for a verification code, if no usable code has been obtained, the program may retry with a different email address while staying on the same Lease. Once verification-code entry/submission begins, later exceptions do not replay the registration by switching email or proxy; they are treated as an "outcome uncertain" state.
+Within a single account attempt, the browser, email, NSFW, and default CPA all stay on the same Lease. The verification-code fetch window is 20s (`CODE_FETCH_TIMEOUT_SEC`); while waiting, if no usable code has been obtained, the program cools the current exit down, takes a new Lease, and retries with a different email address. Once verification-code entry/submission begins, later exceptions do not replay the registration by switching email or proxy; they are treated as an "outcome uncertain" state.
 
 For complete parameters, protocol mappings, runtime behavior, and health rules, see [`docs/proxy-pool.en.md`](docs/proxy-pool.en.md).
 

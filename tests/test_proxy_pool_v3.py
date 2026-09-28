@@ -122,6 +122,141 @@ class ProxyPoolV3Tests(unittest.TestCase):
         self.assertEqual(registration_retry_disposition(STAGE_PAGE_OPEN), SAFE_NEW_LEASE)
         self.assertEqual(registration_retry_disposition(STAGE_PROFILE_SUBMIT), OUTCOME_UNCERTAIN)
 
+    def test_snapshot_counts_attempts_and_registration_successes_per_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_file = os.path.join(tmp, "proxies.txt")
+            Path(pool_file).write_text("http://127.0.0.1:8001\n", encoding="utf-8")
+            manager = ProxyPoolManager(
+                self.cfg(
+                    proxy_mode="pool",
+                    proxy_pool_file=pool_file,
+                    proxy_pool_probe_interval_sec=0,
+                    proxy_pool_endpoint_mode="fixed",
+                    proxy_pool_max_concurrent_per_node=1,
+                )
+            )
+            try:
+                self.assertEqual(manager.snapshot()["nodes"][0]["attempts"], 0)
+                self.assertIsNone(manager.snapshot()["nodes"][0]["success_rate"])
+
+                first = manager.acquire("a", "w", 1, 1, "s1", timeout=1)
+                manager.report_success(first)
+                manager.release(first)
+                second = manager.acquire("a", "w", 2, 1, "s2", timeout=1)
+                manager.report_transport_failure(second, ProxyTransportError("connection refused"))
+                manager.release(second)
+
+                node = manager.snapshot()["nodes"][0]
+                self.assertEqual(node["attempts"], 2)
+                self.assertEqual(node["registration_successes"], 1)
+                self.assertEqual(node["success_rate"], 0.5)
+            finally:
+                manager.shutdown()
+
+    def test_attempts_counter_survives_persisted_health_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_file = os.path.join(tmp, "proxies.txt")
+            state_file = os.path.join(tmp, "state.json")
+            Path(pool_file).write_text("http://127.0.0.1:8001\n", encoding="utf-8")
+            cfg = self.cfg(
+                proxy_mode="pool",
+                proxy_pool_file=pool_file,
+                proxy_pool_probe_interval_sec=0,
+                proxy_pool_endpoint_mode="fixed",
+                proxy_pool_max_concurrent_per_node=1,
+                proxy_pool_persist_health=True,
+                proxy_pool_state_file=state_file,
+            )
+            manager = ProxyPoolManager(cfg)
+            lease = manager.acquire("a", "w", 1, 1, "s1", timeout=1)
+            manager.report_success(lease); manager.release(lease); manager.shutdown()
+
+            restored = ProxyPoolManager(cfg)
+            try:
+                node = restored.snapshot()["nodes"][0]
+                self.assertEqual(node["attempts"], 1)
+                self.assertEqual(node["registration_successes"], 1)
+            finally:
+                restored.shutdown()
+
+    def test_manual_entries_are_pooled_and_disabled_nodes_are_excluded(self):
+        cfg = self.cfg(
+            proxy_mode="pool",
+            proxy_pool_manual_entries=["http://127.0.0.1:8001", "socks5://127.0.0.1:1080"],
+            proxy_pool_probe_interval_sec=0,
+            proxy_pool_endpoint_mode="fixed",
+        )
+        manager = ProxyPoolManager(cfg)
+        try:
+            nodes = manager.snapshot()["nodes"]
+            self.assertEqual(sorted(node["source"] for node in nodes), ["manual", "manual"])
+            self.assertEqual(
+                sorted(node["canonical"] for node in nodes),
+                ["http://127.0.0.1:8001", "socks5://127.0.0.1:1080"],
+            )
+
+            manager.config["proxy_pool_disabled_nodes"] = ["http://127.0.0.1:8001"]
+            manager.reload_sources(force=True)
+            remaining = manager.snapshot()["nodes"]
+            self.assertEqual([node["canonical"] for node in remaining], ["socks5://127.0.0.1:1080"])
+
+            manager.config["proxy_pool_disabled_nodes"] = []
+            manager.reload_sources(force=True)
+            self.assertEqual(len(manager.snapshot()["nodes"]), 2)
+
+            manager.config["proxy_pool_manual_entries"] = ["http://127.0.0.1:8001"]
+            manager.reload_sources(force=True)
+            self.assertEqual(
+                [node["canonical"] for node in manager.snapshot()["nodes"]],
+                ["http://127.0.0.1:8001"],
+            )
+        finally:
+            manager.shutdown()
+
+    def test_disabling_every_node_reports_pool_error(self):
+        cfg = self.cfg(
+            proxy_mode="pool",
+            proxy_pool_manual_entries=["http://127.0.0.1:8001"],
+            proxy_pool_disabled_nodes=["http://127.0.0.1:8001"],
+            proxy_pool_probe_interval_sec=0,
+        )
+        with self.assertRaises(ProxyPoolError):
+            ProxyPoolManager(cfg)
+
+    def test_config_validation_accepts_proxy_lists_and_rejects_bad_shapes(self):
+        from app_config import ConfigError, validate_config_structure
+
+        cfg = validate_config_structure({
+            **dict(DEFAULT_CONFIG),
+            "proxy_pool_manual_entries": ["  http://127.0.0.1:8001  ", "", "vless://uuid@host:443"],
+            "proxy_pool_disabled_nodes": ["http://127.0.0.1:8002"],
+        })
+        self.assertEqual(cfg["proxy_pool_manual_entries"], ["http://127.0.0.1:8001", "vless://uuid@host:443"])
+        self.assertEqual(cfg["proxy_pool_disabled_nodes"], ["http://127.0.0.1:8002"])
+
+        with self.assertRaises(ConfigError):
+            validate_config_structure({**dict(DEFAULT_CONFIG), "proxy_pool_manual_entries": "http://127.0.0.1:8001"})
+        with self.assertRaises(ConfigError):
+            validate_config_structure({**dict(DEFAULT_CONFIG), "proxy_pool_disabled_nodes": [123]})
+
+        from app_config import validate_run_requirements
+
+        manual_only = validate_run_requirements({
+            **dict(DEFAULT_CONFIG),
+            "proxy_mode": "pool",
+            "proxy_pool_manual_entries": ["http://127.0.0.1:8001"],
+            "email_provider": "yyds",
+            "yyds_api_key": "k",
+        })
+        self.assertEqual(manual_only["proxy_mode"], "pool")
+        with self.assertRaises(ConfigError):
+            validate_run_requirements({
+                **dict(DEFAULT_CONFIG),
+                "proxy_mode": "pool",
+                "email_provider": "yyds",
+                "yyds_api_key": "k",
+            })
+
     def _ops(self, failure_stage=None, state=None):
         state = state or {"profile_calls": 0, "page_calls": 0}
         def page():

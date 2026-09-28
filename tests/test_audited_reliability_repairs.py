@@ -210,6 +210,40 @@ class AuditedReliabilityRepairTests(unittest.TestCase):
             )
         self.assertEqual(code, "ABC-123")
 
+    def test_code_fetch_window_is_twenty_seconds(self):
+        captured = {}
+
+        class FakePage:
+            def run_js(self, script, *args):
+                if "if (!code) return 'not-ready'" in script:
+                    return "aggregate"
+                if "function setInputValue" in script:
+                    return "filled-aggregate"
+                if "if (!btn) return 'no-button'" in script:
+                    return "no-button"
+                raise AssertionError("unexpected JS path")
+
+        def fake_get_oai_code(*args, **kwargs):
+            captured.update(kwargs)
+            return "ABC-123"
+
+        with patch.object(registration_browser, "page", FakePage()), \
+             patch.object(registration_browser, "get_oai_code", side_effect=fake_get_oai_code, create=True), \
+             patch.object(registration_browser, "raise_if_cancelled", return_value=None, create=True), \
+             patch.object(registration_browser, "sleep_with_cancel", return_value=None, create=True), \
+             patch.object(registration_browser, "has_profile_form", return_value=True), \
+             patch.object(registration_browser, "_mark_registration_stage"):
+            code = registration_browser.fill_code_and_submit(
+                "u@example.com",
+                "mail-token",
+                timeout=5,
+                transition_timeout=1,
+            )
+
+        self.assertEqual(code, "ABC-123")
+        self.assertEqual(registration_browser.CODE_FETCH_TIMEOUT_SEC, 20)
+        self.assertEqual(captured.get("timeout"), registration_browser.CODE_FETCH_TIMEOUT_SEC)
+
     def test_same_mail_message_can_be_retried_more_than_five_times(self):
         message = {"id": "m1", "to": [{"address": "user@example.com"}]}
         clock = {"now": 0.0}

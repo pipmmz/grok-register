@@ -54,6 +54,9 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
   "proxy_pool_subscription_proxy": "",
   "proxy_pool_subscription_public_only": false,
 
+  "proxy_pool_manual_entries": [],
+  "proxy_pool_disabled_nodes": [],
+
   "proxy_pool_endpoint_mode": "auto",
   "proxy_pool_refresh_interval_sec": 900,
   "proxy_pool_probe_interval_sec": 900,
@@ -84,6 +87,20 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
 | `direct` | Forces the main registration flow to connect directly. |
 | `single` | Treats `proxy` as a single node managed by Lease and health logic. |
 | `pool` | Loads and schedules multiple nodes from a file and/or subscription. |
+
+### Adding and removing individual proxies
+
+```json
+{
+  "proxy_pool_manual_entries": ["http://user:pass@127.0.0.1:7890", "socks5://127.0.0.1:1080"],
+  "proxy_pool_disabled_nodes": ["http://127.0.0.1:8002"]
+}
+```
+
+- `proxy_pool_manual_entries`: manually added nodes; they are parsed and scheduled next to the file and subscription sources (same protocol support). The input plus "Add proxy" in the WebUI node status panel writes this key.
+- `proxy_pool_disabled_nodes`: blocks nodes by canonical URI (`canonical_uri`). It does not delete the source entry, so the block survives file/subscription refreshes and "Restore" brings the node back; the per-row "Remove" button writes this key.
+- Blocking every node raises `代理池节点均已被移除` instead of silently falling back to a direct connection.
+- Both keys are string arrays; each item is capped at 4096 characters and 10000 items. In `pool` mode at least one of file / subscription / manual must be configured.
 
 ### `proxy_fallback`
 
@@ -121,7 +138,7 @@ lease_acquire / browser_start / page_open
 
 code_wait
 → SAME_LEASE_RECOVERY
-→ keep the current Lease, switch email, restart the browser, and continue
+→ no code typed or submitted yet: cool the current exit down, take a new Lease, and continue with another email
 
 email_submit / code_submit / profile_submit / sso_wait
 → OUTCOME_UNCERTAIN
@@ -322,6 +339,16 @@ Cooldown:
 ```text
 30s → 60s → 120s → 240s → 480s → max 600s
 ```
+
+### Success / attempts counters
+
+Every lease granted to a node increments its attempt counter, regardless of the outcome:
+
+```text
+attempts += 1
+```
+
+The WebUI node table renders `registration_successes / attempts` as "OK / attempts", e.g. `0/0` or `3/7 · 42.9%`. With `proxy_pool_persist_health` enabled, `attempts` is persisted alongside the other health fields. Note that `business_samples` only counts attempts that produced business feedback (a real success or a confirmed transport failure), while `attempts` counts every granted lease, so code-fetch failures and application-level errors also land in the denominator.
 
 ### Rotating gateway
 

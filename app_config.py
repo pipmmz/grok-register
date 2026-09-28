@@ -43,6 +43,8 @@ DEFAULT_CONFIG = {
     "proxy_pool_state_file": "./proxy_pool_state.json",
     "proxy_pool_subscription_public_only": False,
     "proxy_pool_preflight_enabled": True,
+    "proxy_pool_manual_entries": [],
+    "proxy_pool_disabled_nodes": [],
     "enable_nsfw": True,
     "turnstile_autoclick_enabled": True,
     "sso_risk_gate_enabled": True,
@@ -116,6 +118,27 @@ def _require_string(cfg, key, path=False):
     return value
 
 
+def _require_string_list(cfg, key, max_items, max_length):
+    value = cfg.get(key)
+    if not isinstance(value, list):
+        raise ConfigError(f"配置项 {key} 必须是字符串数组")
+    items = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ConfigError(f"配置项 {key} 的每一项都必须是字符串")
+        text = item.strip()
+        if not text:
+            continue
+        if len(text) > max_length:
+            raise ConfigError(f"配置项 {key} 的单个条目不能超过 {max_length} 个字符")
+        if "\x00" in text:
+            raise ConfigError(f"配置项 {key} 包含非法空字符")
+        items.append(text)
+    if len(items) > max_items:
+        raise ConfigError(f"配置项 {key} 最多允许 {max_items} 个条目")
+    return items
+
+
 def validate_config_structure(raw):
     if not isinstance(raw, dict):
         raise ConfigError("config root must be a JSON object")
@@ -146,6 +169,8 @@ def validate_config_structure(raw):
     cfg["cpa_mint_timeout_sec"] = _require_int(cfg, "cpa_mint_timeout_sec", 30, 1800)
     cfg["cpa_oidc_request_timeout_sec"] = _require_int(cfg, "cpa_oidc_request_timeout_sec", 3, 120)
     cfg["cpa_oidc_poll_timeout_sec"] = _require_int(cfg, "cpa_oidc_poll_timeout_sec", 3, 120)
+    cfg["proxy_pool_manual_entries"] = _require_string_list(cfg, "proxy_pool_manual_entries", 10000, 4096)
+    cfg["proxy_pool_disabled_nodes"] = _require_string_list(cfg, "proxy_pool_disabled_nodes", 10000, 4096)
     string_keys = tuple(key for key, value in DEFAULT_CONFIG.items() if isinstance(value, str))
     path_keys = {
         "grok2api_local_token_file", "api_reverse_tools", "cpa_auth_dir", "cpa_hotload_dir",
@@ -229,8 +254,10 @@ def validate_run_requirements(cfg):
 
     if cfg["proxy_mode"] == "single" and not cfg["proxy"]:
         raise ConfigError("single 代理模式必须配置 proxy")
-    if cfg["proxy_mode"] == "pool" and not (cfg["proxy_pool_file"] or cfg["proxy_pool_subscription_url"]):
-        raise ConfigError("pool 代理模式至少需要 proxy_pool_file 或 proxy_pool_subscription_url")
+    if cfg["proxy_mode"] == "pool" and not (
+        cfg["proxy_pool_file"] or cfg["proxy_pool_subscription_url"] or cfg["proxy_pool_manual_entries"]
+    ):
+        raise ConfigError("pool 代理模式至少需要 proxy_pool_file、proxy_pool_subscription_url 或 proxy_pool_manual_entries")
     if cfg["proxy_fallback"] == "single" and not cfg["proxy"]:
         raise ConfigError("proxy_fallback=single 时必须配置 proxy")
     if cfg["proxy_pool_persist_health"] and not cfg["proxy_pool_state_file"]:

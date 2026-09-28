@@ -54,6 +54,9 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
   "proxy_pool_subscription_proxy": "",
   "proxy_pool_subscription_public_only": false,
 
+  "proxy_pool_manual_entries": [],
+  "proxy_pool_disabled_nodes": [],
+
   "proxy_pool_endpoint_mode": "auto",
   "proxy_pool_refresh_interval_sec": 900,
   "proxy_pool_probe_interval_sec": 900,
@@ -84,6 +87,20 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
 | `direct` | 强制主注册流程直连。 |
 | `single` | 将 `proxy` 作为受 Lease 和健康管理的单节点。 |
 | `pool` | 从文件和/或订阅加载并调度多个节点。 |
+
+### 单独增删代理节点
+
+```json
+{
+  "proxy_pool_manual_entries": ["http://user:pass@127.0.0.1:7890", "socks5://127.0.0.1:1080"],
+  "proxy_pool_disabled_nodes": ["http://127.0.0.1:8002"]
+}
+```
+
+- `proxy_pool_manual_entries`：手动添加的节点，与文件源、订阅源并列参与解析和调度（支持同样的一整套协议）；WebUI 代理节点状态里的输入框 + 「添加代理」会写入这个键。
+- `proxy_pool_disabled_nodes`：按规范化 URI（`canonical_uri`）屏蔽节点。它不删除来源条目，所以文件/订阅刷新后依然保持屏蔽，点「恢复」即可还原；WebUI 每行的「移除」写入这个键。
+- 屏蔽全部节点时池会报 `代理池节点均已被移除`，不会静默降级为直连。
+- 两个键都是字符串数组，单项最长 4096 字符、最多 10000 项；`pool` 模式下三者（文件 / 订阅 / 手动）至少配置一个。
 
 ### `proxy_fallback`
 
@@ -121,7 +138,7 @@ lease_acquire / browser_start / page_open
 
 code_wait
 → SAME_LEASE_RECOVERY
-→ 只允许保持当前 Lease，更换邮箱并重启浏览器后继续尝试
+→ 尚未输入/提交验证码：冷却当前出口并换新租约，同时更换邮箱后继续尝试
 
 email_submit / code_submit / profile_submit / sso_wait
 → OUTCOME_UNCERTAIN
@@ -322,6 +339,16 @@ health = max(0.05, health * 0.7)
 ```text
 30s → 60s → 120s → 240s → 480s → 最大 600s
 ```
+
+### 成功 / 尝试计数
+
+每次把租约授予某个节点（无论最终结果如何）都会累加：
+
+```text
+attempts += 1
+```
+
+WebUI 代理节点表按 `registration_successes / attempts` 显示「成功/尝试」，例如 `0/0`、`3/7 · 42.9%`。启用 `proxy_pool_persist_health` 时 `attempts` 与其它健康字段一起落盘。注意 `business_samples` 只统计产生业务反馈的 attempt（真实成功或确认 transport failure），而 `attempts` 统计每一次租约授予，所以取码失败、应用层异常等也会进入分母。
 
 ### Rotating gateway
 

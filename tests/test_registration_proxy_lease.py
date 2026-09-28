@@ -62,30 +62,67 @@ class RegistrationProxyLeaseTests(unittest.TestCase):
 
         return state, begin, end
 
-    def test_mail_retry_keeps_one_slot_lease(self):
+    def test_code_wait_failure_switches_mailbox_and_proxy(self):
         state = {"browser": False, "restarts": 0, "code_calls": 0}
         callbacks = RegistrationCallbacks(log=lambda _message: None, cancelled=lambda: False)
-        observer = lambda _batch, _account, _output: None
         lease, begin, end = self._lease_spy()
+        cooled = []
+        fake_lease = type("Lease", (), {"slot_index": 1, "attempt_index": 1, "worker_key": "w"})()
 
         with patch.dict(registration_flow.app_config, {"proxy_mode": "single"}, clear=False), patch(
             "registration_flow.begin_registration_slot", side_effect=begin
-        ), patch("registration_flow.end_registration_slot", side_effect=end):
+        ), patch("registration_flow.end_registration_slot", side_effect=end), patch(
+            "registration_flow.current_proxy_lease", return_value=fake_lease
+        ), patch(
+            "registration_flow.report_current_code_wait_failure", side_effect=cooled.append
+        ):
             result = run_batch(
                 count=1,
                 callbacks=callbacks,
-                observer=observer,
+                observer=lambda *_args: None,
                 ops=self._ops(state),
                 enable_nsfw=True,
                 max_mail_retry=2,
             )
 
         self.assertEqual(result.success_count, 1)
-        self.assertEqual(len(lease["begins"]), 1)
-        self.assertEqual(len(lease["releases"]), 1)
-        self.assertTrue(lease["releases"][0]["success"])
+        self.assertEqual(state["code_calls"], 2, "取码失败后要换邮箱重试")
+        self.assertEqual(
+            [call["attempt_index"] for call in lease["begins"]],
+            [1, 2],
+            "取码失败后要冷却当前出口并换一个新租约",
+        )
+        self.assertEqual(len(cooled), 1)
+        self.assertIsInstance(cooled[0], VerificationCodeUnavailable)
+        self.assertEqual(state["restarts"], 1)
+        self.assertTrue(lease["releases"][-1]["success"])
+
+    def test_mailbox_retry_without_managed_lease_does_not_rotate(self):
+        state = {"browser": False, "restarts": 0, "code_calls": 0}
+        callbacks = RegistrationCallbacks(log=lambda _message: None, cancelled=lambda: False)
+        lease, begin, end = self._lease_spy()
+        cooled = []
+
+        with patch.dict(registration_flow.app_config, {"proxy_mode": "auto"}, clear=False), patch(
+            "registration_flow.begin_registration_slot", side_effect=begin
+        ), patch("registration_flow.end_registration_slot", side_effect=end), patch(
+            "registration_flow.current_proxy_lease", return_value=None
+        ), patch(
+            "registration_flow.report_current_code_wait_failure", side_effect=cooled.append
+        ):
+            result = run_batch(
+                count=1,
+                callbacks=callbacks,
+                observer=lambda *_args: None,
+                ops=self._ops(state),
+                enable_nsfw=True,
+                max_mail_retry=2,
+            )
+
+        self.assertEqual(result.success_count, 1)
         self.assertEqual(state["code_calls"], 2)
-        self.assertEqual(state["restarts"], 1, "mail retry should restart browser without starting a new slot")
+        self.assertEqual([call["attempt_index"] for call in lease["begins"]], [1])
+        self.assertEqual(cooled, [])
 
     def test_each_processed_account_gets_its_own_slot(self):
         state = {"browser": False, "restarts": 0, "code_calls": 99}

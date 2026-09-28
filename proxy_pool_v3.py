@@ -68,6 +68,7 @@ class ProxyNode:
     enabled: bool = True
     rotating: bool = False
     health: float = 1.0
+    attempts: int = 0
     business_samples: int = 0
     registration_successes: int = 0
     transport_failures: int = 0
@@ -130,6 +131,7 @@ def _config_signature(config):
         "proxy_runtime_idle_ttl_sec", "proxy_runtime_cache_max",
         "proxy_pool_persist_health", "proxy_pool_state_file",
         "proxy_pool_subscription_public_only",
+        "proxy_pool_manual_entries", "proxy_pool_disabled_nodes",
     )
     return tuple((key, config.get(key)) for key in keys)
 
@@ -251,6 +253,13 @@ def _validate_public_url(url):
         raise ProxyPoolError("代理订阅 public-only 模式拒绝非公网目标")
 
 
+_SOURCE_CONFIG_KEYS = {
+    "file": "proxy_pool_file",
+    "subscription": "proxy_pool_subscription_url",
+    "manual": "proxy_pool_manual_entries",
+}
+
+
 class ProxyPoolManager:
     def __init__(self, config, log=None):
         self.config = dict(config or {})
@@ -279,7 +288,7 @@ class ProxyPoolManager:
         self._last_refresh = 0.0
         self._last_probe_all = 0.0
         self._probe_all_running = False
-        self._source_states = {"file": SourceState(), "subscription": SourceState()}
+        self._source_states = {"file": SourceState(), "subscription": SourceState(), "manual": SourceState()}
         self._source_diagnostics = {}
         self._persisted_state = self._load_state_file()
         self._runtime = ProtocolRuntimeManager(self.config, log=self.log)
@@ -319,7 +328,7 @@ class ProxyPoolManager:
                 if node.retired:
                     continue
                 nodes[node.id] = {
-                    "health": node.health, "business_samples": node.business_samples,
+                    "health": node.health, "attempts": node.attempts, "business_samples": node.business_samples,
                     "registration_successes": node.registration_successes, "transport_failures": node.transport_failures,
                     "suspected_failures": node.suspected_failures, "configuration_failures": node.configuration_failures,
                     "exit_successes": node.exit_successes, "exit_failures": node.exit_failures,
@@ -351,7 +360,7 @@ class ProxyPoolManager:
         if not isinstance(saved, dict):
             return
         for key in (
-            "health", "business_samples", "registration_successes", "transport_failures", "suspected_failures",
+            "health", "attempts", "business_samples", "registration_successes", "transport_failures", "suspected_failures",
             "configuration_failures", "exit_successes", "exit_failures", "failure_count", "cooldown_until",
             "last_error", "last_success_at", "last_failure_at",
         ):
@@ -374,6 +383,12 @@ class ProxyPoolManager:
             path = os.path.join(_ROOT, path)
         with open(path, "r", encoding="utf-8-sig") as handle:
             return parse_subscription_source(handle.read())
+
+    def _read_manual_source(self):
+        entries = [str(item).strip() for item in (self.config.get("proxy_pool_manual_entries") or []) if str(item).strip()]
+        if not entries:
+            return None
+        return parse_subscription_source("\n".join(entries))
 
     def _fetch_subscription(self):
         url = str(self.config.get("proxy_pool_subscription_url") or "").strip()
@@ -421,7 +436,7 @@ class ProxyPoolManager:
 
     def _refresh_source(self, name, loader):
         state = self._source_states[name]
-        configured = bool(self.config.get("proxy_pool_file") if name == "file" else self.config.get("proxy_pool_subscription_url"))
+        configured = bool(self.config.get(_SOURCE_CONFIG_KEYS.get(name, "")))
         state.configured = configured
         if not configured:
             state.descriptors = []
@@ -460,19 +475,28 @@ class ProxyPoolManager:
             return []
         self._refresh_source("file", self._read_file_source)
         self._refresh_source("subscription", self._fetch_subscription)
+        self._refresh_source("manual", self._read_manual_source)
         values = []
-        for name in ("file", "subscription"):
+        for name in ("file", "subscription", "manual"):
             values.extend((name, item) for item in self._source_states[name].descriptors)
         unique, seen = [], set()
         for source, descriptor in values:
             if descriptor.node_id not in seen:
                 seen.add(descriptor.node_id); unique.append((source, descriptor))
         self._source_diagnostics = {name: dict(state.diagnostics) for name, state in self._source_states.items() if state.configured}
+        disabled = self._disabled_uris()
+        if disabled:
+            unique = [(source, descriptor) for source, descriptor in unique if descriptor.canonical_uri not in disabled]
         if not unique:
+            if values and disabled:
+                raise ProxyPoolError("代理池节点均已被移除: %s 个在 proxy_pool_disabled_nodes 中" % len(disabled))
             errors = [state.last_error for state in self._source_states.values() if state.last_error]
-            detail = "; ".join(errors) if errors else "未配置代理池文件或订阅"
+            detail = "; ".join(errors) if errors else "未配置代理池文件、订阅或手动代理"
             raise ProxyPoolError("代理池没有可用节点: %s" % detail)
         return unique
+
+    def _disabled_uris(self):
+        return {str(item).strip() for item in (self.config.get("proxy_pool_disabled_nodes") or []) if str(item).strip()}
 
     def _reload_sources_locked(self, force=False):
         """Refresh sources while the dedicated refresh lock is held."""
@@ -625,7 +649,7 @@ class ProxyPoolManager:
                         raise ProxyAcquireCancelled("代理租约等待已取消")
                     now = time.time(); eligible = self._eligible_locked(now)
                     if eligible:
-                        selected = self._select_locked(eligible, affinity); selected.inflight += 1; break
+                        selected = self._select_locked(eligible, affinity); selected.inflight += 1; selected.attempts += 1; break
                     active_nodes = [node for node in self._nodes.values() if node.enabled and not node.retired]
                     if not active_nodes:
                         fallback = self._fallback_lease_locked(worker_key, slot_index, attempt_index, affinity, session_key)
@@ -700,7 +724,7 @@ class ProxyPoolManager:
             self._condition.notify_all()
         self._save_state_file()
 
-    def _apply_transport_failure(self, node_id, error, schedule_probe=True, lease=None):
+    def _apply_transport_failure(self, node_id, error, schedule_probe=True, lease=None, reason=None):
         node_for_probe = None
         with self._condition:
             node = self._nodes.get(node_id)
@@ -712,7 +736,9 @@ class ProxyPoolManager:
             else:
                 node.failure_count += 1; node.health = max(0.05, node.health * 0.7)
                 cooldown = min(600, 30 * (2 ** min(max(node.failure_count - 1, 0), 4)))
-                node.cooldown_until = time.time() + cooldown; node.last_error = "transport"; node_for_probe = node.id
+                node.cooldown_until = time.time() + cooldown
+                node.last_error = ("transport: %s" % safe_proxy_error_text(reason)[:200]) if reason else "transport"
+                node_for_probe = node.id
                 self._condition.notify_all()
         self._save_state_file()
         if node_for_probe and schedule_probe: self._schedule_failure_probe(node_for_probe)
@@ -741,6 +767,22 @@ class ProxyPoolManager:
             if node is not None: node.suspected_failures += 1
         lease.suspected_feedback = True
         self._schedule_failure_probe(lease.node_id, penalize_on_failure=True, suspected_error=error, lease=lease)
+
+    def report_code_wait_failure(self, lease, error):
+        """取码失败：当前出口按传输失败处理并进入冷却，冷却期内不再被调度选中。
+
+        这不是连通性故障，所以不安排探测：节点必须等冷却自然到期（或后续注册成功）才恢复，
+        避免“探测一通过就立刻又被同一出口选走”。
+        """
+        if lease is None or lease.node_id in ("direct", "fallback-single"):
+            return
+        self._apply_transport_failure(
+            lease.node_id,
+            error,
+            schedule_probe=False,
+            lease=lease,
+            reason="code_wait: %s" % safe_proxy_error_text(error),
+        )
 
     def _probe_endpoint(self, family="ipv4"):
         if self.probe_provider == "ipinfo":
@@ -893,9 +935,11 @@ class ProxyPoolManager:
                 gateway_success_rate = round(node.exit_successes / gateway_samples, 4) if gateway_samples else None
                 nodes.append({
                     "id": node.id, "source": node.source, "proxy": node.descriptor.raw_uri, "name": node.name,
+                    "canonical": node.descriptor.canonical_uri,
                     "protocol": node.protocol, "backend": node.backend, "enabled": bool(node.enabled), "rotating": bool(node.rotating),
                     "health_model": "gateway" if node.rotating else "fixed", "health": None if node.rotating else round(float(node.health), 3),
                     "business_samples": int(node.business_samples), "registration_successes": node.registration_successes,
+                    "attempts": int(node.attempts), "success_rate": round(node.registration_successes / node.attempts, 4) if node.attempts else None,
                     "transport_failures": node.transport_failures, "suspected_failures": node.suspected_failures,
                     "configuration_failures": node.configuration_failures, "exit_successes": node.exit_successes, "exit_failures": node.exit_failures,
                     "gateway_success_rate": gateway_success_rate, "failure_count": int(node.failure_count), "cooldown_sec": 0 if node.rotating else cooldown,
@@ -969,6 +1013,12 @@ def end_registration_slot(success=False, transport_error=None):
 def report_current_transport_failure(error):
     lease = current_proxy_lease()
     if lease is not None: get_manager().report_transport_failure(lease, error)
+
+
+def report_current_code_wait_failure(error):
+    """当前租约在取码阶段失败：冷却该出口，后续调度不再选它。"""
+    lease = current_proxy_lease()
+    if lease is not None: get_manager().report_code_wait_failure(lease, error)
 
 
 def report_current_suspected_transport_failure(error):

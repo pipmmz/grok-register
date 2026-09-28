@@ -30,6 +30,9 @@ TURNSTILE_AUTOCLICK_GRACE_SEC = 2.5
 TURNSTILE_AUTOCLICK_INTERVAL_SEC = 5.0
 TURNSTILE_AUTOCLICK_MAX_ATTEMPTS = 4
 
+# 拉取验证码的等待窗口：超过该时间仍未收到验证码即按“本邮箱取码失败”处理。
+CODE_FETCH_TIMEOUT_SEC = 20
+
 
 def _mark_registration_stage(stage):
     # Function-local import avoids an import-time cycle while keeping the browser module reusable.
@@ -774,6 +777,7 @@ return false;
     code = get_oai_code(
         dev_token,
         email,
+        timeout=CODE_FETCH_TIMEOUT_SEC,
         log_callback=log_callback,
         cancel_callback=cancel_callback,
         resend_callback=_resend_code,

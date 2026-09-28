@@ -255,6 +255,8 @@ CLI 读取 `config.json`，通过校验后提示：
 | `user_agent` | Chromium 和请求使用的 User-Agent |
 | `proxy_mode` | `auto` / `direct` / `single` / `pool` |
 | `proxy` | 单代理地址；`auto` 模式下留空即直连 |
+| `proxy_pool_manual_entries` | 手动添加的代理节点（与文件/订阅并列），WebUI 可直接添加 |
+| `proxy_pool_disabled_nodes` | 按规范化 URI 屏蔽的节点，WebUI「移除 / 恢复」维护 |
 | `multi_thread_enabled` | 是否启用并发注册，默认 `false` |
 | `multi_thread_workers` | 并发 worker 数，范围 `1–8` |
 
@@ -440,7 +442,7 @@ ss://...
 
 代理 runtime 采用 lazy + idle cache 机制：节点只有在实际被选中、probe 或 preflight 时才建立本地 runtime。需要统一 HTTP 出口的原生代理会使用 `LocalProxyBridge`；VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks 使用 sing-box。Lease 引用数降为 0 后 runtime 默认不会立即退出，而是进入空闲缓存；默认 `proxy_runtime_idle_ttl_sec=120`、`proxy_runtime_cache_max=32`，TTL 到期、缓存淘汰或 Manager shutdown 时才会关闭。设置 `proxy_runtime_idle_ttl_sec=0` 可恢复零引用立即关闭。
 
-同一个账号 attempt 内，浏览器、邮箱、NSFW 和默认 CPA 保持同一个 Lease。等待验证码期间若确认尚未取得可用验证码，会在同一个 Lease 内更换邮箱重试；一旦进入验证码填写/提交阶段，后续异常不会再通过换邮箱或换代理重放注册，而会按“结果不确定”处理。
+同一个账号 attempt 内，浏览器、邮箱、NSFW 和默认 CPA 保持同一个 Lease。拉取验证码的等待窗口为 20s（`CODE_FETCH_TIMEOUT_SEC`），等待期间若确认尚未取得可用验证码，会冷却当前出口、换一个新租约并更换邮箱后重试；一旦进入验证码填写/提交阶段，后续异常不会再通过换邮箱或换代理重放注册，而会按“结果不确定”处理。
 
 完整参数、协议映射、运行时和健康度规则见 [`docs/proxy-pool.md`](docs/proxy-pool.md)。
 
