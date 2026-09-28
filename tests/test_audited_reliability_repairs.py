@@ -1,6 +1,7 @@
 """Regression coverage for the audited reliability repair set."""
 
 import json
+import os
 import queue
 import tempfile
 import threading
@@ -100,6 +101,32 @@ class AuditedReliabilityRepairTests(unittest.TestCase):
         self.assertEqual(state["restarts"], 0)
         self.assertEqual(result.fail_count, 1)
         self.assertEqual(result.uncertain_count, 1)
+
+    def test_account_line_write_also_records_sso_token_list(self):
+        with tempfile.TemporaryDirectory() as directory:
+            accounts_path = os.path.join(directory, "accounts_20260101_000000.txt")
+            account_outputs.append_account_line(accounts_path, "a@example.com", "pw1", "sso-token-1")
+            account_outputs.append_account_line(accounts_path, "b@example.com", "pw2", "sso-token-2")
+            account_outputs.append_account_line(accounts_path, "a@example.com", "pw1", "sso-token-1")
+
+            accounts_lines = Path(accounts_path).read_text(encoding="utf-8").splitlines()
+            sso_path = account_outputs.sso_token_path(accounts_path)
+            sso_lines = Path(sso_path).read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(sso_path, os.path.join(directory, "sso_tokens.txt"))
+        self.assertEqual(
+            accounts_lines,
+            ["a@example.com----pw1----sso-token-1", "b@example.com----pw2----sso-token-2", "a@example.com----pw1----sso-token-1"],
+        )
+        self.assertEqual(sso_lines, ["sso-token-1", "sso-token-2"])
+
+    def test_sso_token_list_skips_empty_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            accounts_path = os.path.join(directory, "accounts_20260101_000000.txt")
+            account_outputs.append_account_line(accounts_path, "a@example.com", "pw", "")
+            sso_path = account_outputs.sso_token_path(accounts_path)
+            self.assertTrue(Path(accounts_path).exists())
+            self.assertFalse(Path(sso_path).exists())
 
     def test_mail_credential_write_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:

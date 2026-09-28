@@ -138,11 +138,14 @@ class MinimalBoundaryRegressionTests(unittest.TestCase):
             pending.write_text(json.dumps({"email": "u@example.com", "password": "pw", "sso": "sso"}) + "\n", encoding="utf-8")
             with patch.object(account_outputs, "FileLock", FakeLock):
                 account_outputs.retry_pending_file(str(pending), output_path=str(target))
+            sso_lock = str(Path(directory).resolve() / "sso_tokens.txt.lock")
             expected = sorted(
-                [str(pending.resolve()) + ".lock", str(target.resolve()) + ".lock"],
+                [str(pending.resolve()) + ".lock", str(target.resolve()) + ".lock", sso_lock],
                 key=lambda value: __import__("os").path.normcase(__import__("os").path.abspath(value)),
             )
             self.assertEqual(acquired, expected)
+            # SSO 列表锁只能在目标账号文件锁之后获取，保证全局固定的加锁顺序。
+            self.assertLess(acquired.index(str(target.resolve()) + ".lock"), acquired.index(sso_lock))
 
     def test_nsfw_exception_does_not_discard_registered_account(self):
         logs = []

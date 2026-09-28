@@ -536,6 +536,7 @@ ss://...
 | 文件 / 目录 | 内容 |
 | --- | --- |
 | `accounts_*.txt` | 已成功保存的账号、密码和 SSO token |
+| `sso_tokens.txt` | 自动维护的 SSO token 列表（一行一条、按内容去重），与 `accounts_*.txt` 同目录；成功落盘或 pending 恢复时都会追加 |
 | `<sso_risk_rejected_file>` | 被 `botFlagSource=1/2` 或 `policy=deny` 隔离的 SSO；默认 `./sso_risk_rejected.txt` |
 | `mail_credentials.txt` | 注册过程中创建的临时邮箱地址与邮箱凭据；邮箱创建后会在提交注册前提前持久化，因此可能包含后续失败、重试或结果不确定 attempt 的记录 |
 | `accounts_*.txt.pending.jsonl` | 已注册成功但主账号结果文件未成功写入的普通账号 pending；可使用 `retry-pending` 恢复 |

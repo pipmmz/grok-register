@@ -536,6 +536,7 @@ The two remote credential methods cannot be configured at the same time. The new
 | File / Directory | Contents |
 | --- | --- |
 | `accounts_*.txt` | Successfully saved accounts, passwords, and SSO tokens |
+| `sso_tokens.txt` | Automatically maintained SSO token list (one token per line, deduplicated), stored next to `accounts_*.txt`; appended on every save and on pending recovery |
 | `<sso_risk_rejected_file>` | SSO records quarantined due to `botFlagSource=1/2` or `policy=deny`; default `./sso_risk_rejected.txt` |
 | `mail_credentials.txt` | Temporary email addresses and email credentials created during registration. Email credentials are persisted before registration submission immediately after mailbox creation, so this file may include attempts that later failed, were retried, or ended with an uncertain outcome |
 | `accounts_*.txt.pending.jsonl` | Normal account pending results for registrations that succeeded but could not be written to the main account result file; recover with `retry-pending` |

@@ -12,7 +12,33 @@ from datetime import datetime, timedelta, timezone
 from filelock import FileLock
 
 
+def sso_token_path(accounts_path):
+    """SSO 列表文件：与 accounts_*.txt 同目录，固定文件名 sso_tokens.txt。"""
+    return os.path.join(os.path.dirname(os.path.abspath(accounts_path)), "sso_tokens.txt")
+
+
+def append_sso_token(accounts_path, sso):
+    """把 SSO token 追加到 sso_tokens.txt：一行一条、按内容去重、独立锁。"""
+    token = str(sso or "").strip()
+    if not token:
+        return False
+    path = sso_token_path(accounts_path)
+    with FileLock(path + ".lock", timeout=30):
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                for raw_line in handle:
+                    if raw_line.rstrip("\r\n") == token:
+                        return True
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(token + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    return True
+
+
 def _append_account_line_unlocked(path, email, password, sso):
+    # 先落 SSO 列表：它失败就不写账号行，交给 pending 队列整体重试，避免两处状态不一致。
+    append_sso_token(path, sso)
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(f"{email}----{password}----{sso}\n")
         handle.flush()

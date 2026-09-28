@@ -1630,6 +1630,9 @@ class GrokRegisterGUI:
         else:
             self.log("[*] 多线程注册关闭，使用原串行流程")
         self.log(f"[*] 成功账号将实时保存到: {self.accounts_output_file}")
+        from account_outputs import sso_token_path
+
+        self.log(f"[*] SSO token 列表（一行一条）: {sso_token_path(self.accounts_output_file)}")
         threading.Thread(
             target=self.run_registration,
             args=(count,),
@@ -1697,6 +1700,9 @@ def run_registration_cli(count):
     )
     cli_log(f"[*] 终端模式启动，目标数量: {count}")
     cli_log(f"[*] 成功账号将实时保存到: {accounts_output_file}")
+    from account_outputs import sso_token_path
+
+    cli_log(f"[*] SSO token 列表（一行一条）: {sso_token_path(accounts_output_file)}")
     last_stats = {"success": 0, "fail": 0, "pending": 0, "warnings": 0}
     def observer(batch, account, output):
         last_stats["success"] = batch.success_count
