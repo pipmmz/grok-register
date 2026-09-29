@@ -233,6 +233,30 @@ def _build_request_kwargs(**kwargs):
     return request_kwargs
 
 
+def raise_http_error(response, detail_limit=300):
+    """等价于 raise_for_status(),但异常信息里带上 URL、状态码和响应体。
+
+    requests 自带的 raise_for_status() 在服务端没有 reason phrase 时只会给出
+    "HTTP Error 403: ",既看不出是哪个接口,也看不到服务端返回的错误内容。
+    只在 4xx/5xx 时抛出,与 requests 的行为一致。
+    """
+    status = int(getattr(response, "status_code", 0) or 0)
+    if not 400 <= status < 600:
+        return response
+    url = str(getattr(response, "url", "") or "") or "(unknown url)"
+    body = ""
+    try:
+        body = " ".join(str(getattr(response, "text", "") or "").split())
+    except Exception:
+        body = ""
+    if len(body) > detail_limit:
+        body = body[:detail_limit] + "…"
+    message = "HTTP %s %s" % (status, url)
+    if body:
+        message += " | " + body
+    raise requests.exceptions.HTTPError(message)
+
+
 def http_get(url, **kwargs):
     request_kwargs = _build_request_kwargs(**kwargs)
     try:

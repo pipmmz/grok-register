@@ -464,6 +464,8 @@ return !!(givenInput && familyInput && passwordInput);
 
 def fill_email_and_submit(timeout=45, log_callback=None, cancel_callback=None, on_mail_created=None):
     raise_if_cancelled(cancel_callback)
+    if log_callback:
+        log_callback("[*] 邮箱服务: %s" % describe_email_provider())
     email, dev_token = get_email_and_token()
     if not email or not dev_token:
         raise Exception("获取邮箱失败")

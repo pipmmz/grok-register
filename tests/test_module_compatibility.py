@@ -29,6 +29,24 @@ class ModuleCompatibilityTests(unittest.TestCase):
         self.assertIs(browser_confirm.close_standalone, browser_session.close_standalone)
         self.assertIs(browser_confirm.normalize_cookies, browser_session.normalize_cookies)
 
+    def test_mailbox_creation_logs_provider_config_before_attempting(self):
+        """失败前先打出邮箱服务配置,日志才能定位是哪个 provider/地址/鉴权。"""
+        app.config.update({
+            "email_provider": "cloudflare",
+            "cloudflare_api_base": "https://temp-mail.example.com",
+            "cloudflare_auth_mode": "none",
+            "cloudflare_api_key": "",
+        })
+        lines = []
+        with patch.object(mail_service, "get_email_and_token", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                app.fill_email_and_submit(log_callback=lines.append)
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(
+            lines[0],
+            "[*] 邮箱服务: cloudflare api_base=https://temp-mail.example.com path=/api/new_address auth=none key=未配置",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

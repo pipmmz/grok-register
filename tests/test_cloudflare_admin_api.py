@@ -181,5 +181,86 @@ class CloudflareAdminCreateTests(unittest.TestCase):
         self.assertIn("fallback 403", message)
 
 
+class ErrorResponse:
+    """带 url/status/body 的失败响应,用于校验报错信息。"""
+
+    def __init__(self, status_code, url, text):
+        self.status_code = status_code
+        self.url = url
+        self.text = text
+
+    def json(self):
+        raise ValueError("not json")
+
+
+class HttpFailureMessageTests(unittest.TestCase):
+    def setUp(self):
+        self.original_config = app.config.copy()
+
+    def tearDown(self):
+        app.config = self.original_config
+
+    def test_http_error_message_carries_url_status_and_body(self):
+        import browser_runtime
+        from curl_cffi.requests import exceptions
+
+        response = ErrorResponse(403, "https://mail.example.com/api/new_address", '{"success":false,"errors":[{"code":10000}]}')
+        with self.assertRaises(exceptions.HTTPError) as caught:
+            browser_runtime.raise_http_error(response)
+        message = str(caught.exception)
+        self.assertIn("HTTP 403", message)
+        self.assertIn("https://mail.example.com/api/new_address", message)
+        self.assertIn('"code":10000', message)
+
+        # 2xx/3xx 不抛异常,和 raise_for_status() 一致
+        for status in (200, 302):
+            ok_response = ErrorResponse(status, "https://mail.example.com/x", "")
+            self.assertIs(browser_runtime.raise_http_error(ok_response), ok_response)
+
+    def test_cloudflare_failure_reports_config_and_response_body(self):
+        app.config.update({
+            "email_provider": "cloudflare",
+            "cloudflare_api_base": "https://temp-mail.example.com",
+            "cloudflare_api_key": "admin-secret",
+            "cloudflare_auth_mode": "x-admin-auth",
+            "cloudflare_path_accounts": "/api/new_address",
+        })
+        primary = ErrorResponse(403, "https://temp-mail.example.com/api/new_address", '{"errors":[{"message":"Authentication error"}]}')
+        fallback = ErrorResponse(401, "https://temp-mail.example.com/api/domains", '{"error":"unauthorized"}')
+        with patch.object(mail_service, "config", app.config), patch.object(
+            mail_service, "http_post", return_value=primary,
+        ), patch.object(
+            mail_service, "http_get", return_value=fallback,
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                mail_service.get_email_and_token()
+
+        message = str(caught.exception)
+        self.assertIn("邮箱服务配置: cloudflare api_base=https://temp-mail.example.com path=/api/new_address auth=x-admin-auth key=已配置", message)
+        self.assertIn("HTTP 403 https://temp-mail.example.com/api/new_address", message)
+        self.assertIn("Authentication error", message)
+        self.assertIn("HTTP 401 https://temp-mail.example.com/api/domains", message)
+        self.assertNotIn("admin-secret", message)
+
+    def test_describe_email_provider_never_leaks_keys(self):
+        app.config.update({
+            "email_provider": "cloudflare",
+            "cloudflare_api_base": "https://temp-mail.example.com",
+            "cloudflare_api_key": "super-secret-key",
+            "cloudflare_auth_mode": "x-api-key",
+        })
+        with patch.object(mail_service, "config", app.config):
+            text = mail_service.describe_email_provider()
+        self.assertIn("auth=x-api-key", text)
+        self.assertIn("key=已配置", text)
+        self.assertNotIn("super-secret-key", text)
+
+        app.config.update({"email_provider": "cloudmail", "cloudmail_api_base": "https://mail.example.com", "cloudmail_public_token": "public-secret"})
+        with patch.object(mail_service, "config", app.config):
+            text = mail_service.describe_email_provider()
+        self.assertIn("cloudmail api_base=https://mail.example.com public_token=已配置", text)
+        self.assertNotIn("public-secret", text)
+
+
 if __name__ == "__main__":
     unittest.main()
