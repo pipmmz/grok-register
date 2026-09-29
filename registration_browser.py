@@ -11,6 +11,7 @@ from DrissionPage import Chromium
 from DrissionPage.errors import ContextLostError, JavaScriptError, PageDisconnectedError
 from curl_cffi import requests
 from proxy_pool import ProxyTransportError, safe_proxy_error_text
+from registration_flow import VerificationCodeUnavailable
 
 browser = None
 page = None
@@ -462,6 +463,58 @@ return !!(givenInput && familyInput && passwordInput);
     except Exception:
         return False
 
+def page_rejection_text():
+    """抓取注册页上的错误/拒绝提示文本(例如邮箱域名不被允许)。"""
+    if page is None:
+        return ""
+    try:
+        text = page.run_js(
+            r"""
+const picked = Array.from(document.querySelectorAll('[role="alert"], [aria-live], [data-testid*="error" i], [class*="error" i], [class*="alert" i], [class*="warning" i]'))
+    .filter((node) => node.offsetParent !== null)
+    .map((node) => (node.innerText || node.textContent || '').trim())
+    .filter(Boolean)
+    .join(' | ');
+const body = (document.body && document.body.innerText) || '';
+return (picked + ' || ' + body).replace(/\s+/g, ' ').trim().slice(0, 6000);
+            """
+        )
+    except Exception:
+        return ""
+    return str(text or "")
+
+
+_PAGE_REJECTION_PATTERNS = (
+    "aren't allowed", "isn't allowed", "are not allowed", "is not allowed", "not permitted",
+    "invalid email", "email is invalid", "already been used", "already in use", "unsupported email",
+    "不允许", "不被允许", "不支持", "无效的邮箱", "邮箱无效", "已被使用", "已被注册", "已注册",
+)
+_PAGE_REJECTION_GENERIC = ("not allowed", "blocked", "rejected")
+
+
+def match_page_rejection(text):
+    """在页面文本里找出拒绝提示所在的句子;没有则返回空串。"""
+    raw = str(text or "")
+    lowered = raw.lower()
+    for pattern in _PAGE_REJECTION_PATTERNS:
+        index = lowered.find(pattern)
+        if index < 0:
+            continue
+        return " ".join(raw[max(0, index - 90): index + 130].split())
+    for pattern in _PAGE_REJECTION_GENERIC:
+        start = 0
+        while True:
+            index = lowered.find(pattern, start)
+            if index < 0:
+                break
+            snippet = raw[max(0, index - 90): index + 130]
+            context = snippet.lower()
+            if any(word in context for word in ("email", "domain", "sign-up", "signup", "sign up", "邮箱", "域名")):
+                return " ".join(snippet.split())
+            start = index + len(pattern)
+    return ""
+
+
 def fill_email_and_submit(timeout=45, log_callback=None, cancel_callback=None, on_mail_created=None):
     raise_if_cancelled(cancel_callback)
     if log_callback:
@@ -750,6 +803,12 @@ return 'enter';
             if log_callback:
                 detail = f" ({clicked})" if isinstance(clicked, str) else ""
                 log_callback(f"[*] 已填写邮箱并提交: {email}{detail}")
+            sleep_with_cancel(1.0, cancel_callback)
+            rejection = match_page_rejection(page_rejection_text())
+            if rejection:
+                if log_callback:
+                    log_callback(f"[!] 注册页提示: {rejection}")
+                raise VerificationCodeUnavailable(f"注册页拒绝该邮箱/域名: {rejection}")
             return email, dev_token
         sleep_with_cancel(0.5, cancel_callback)
     if last_snapshot:
@@ -776,6 +835,11 @@ return false;
         )
 
     _mark_registration_stage("code_wait")
+    rejection = match_page_rejection(page_rejection_text())
+    if rejection:
+        if log_callback:
+            log_callback(f"[!] 注册页提示: {rejection}")
+        raise VerificationCodeUnavailable(f"注册页拒绝该邮箱/域名: {rejection}")
     code = get_oai_code(
         dev_token,
         email,
@@ -788,9 +852,22 @@ return false;
         raise Exception("获取验证码失败")
     clean_code = str(code).replace("-", "").strip()
     deadline = time.time() + timeout
+    last_page_check = 0.0
 
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
+        now = time.time()
+        if now - last_page_check >= 10:
+            last_page_check = now
+            page_text = page_rejection_text()
+            rejection = match_page_rejection(page_text)
+            if rejection:
+                if log_callback:
+                    log_callback(f"[!] 注册页提示: {rejection}")
+                raise VerificationCodeUnavailable(f"注册页拒绝该邮箱/域名: {rejection}")
+            if log_callback:
+                url = page.url if page else ""
+                log_callback(f"[Debug] 等待验证码页面: url={url}; 提示={page_text[:200] or 'none'}")
         ready = page.run_js(
             """
 const code = String(arguments[0] || '').trim();
