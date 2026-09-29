@@ -90,7 +90,7 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
 
 ### Node list (JSON)
 
-The node list is a standalone JSON file; nodes added or removed in the WebUI and their enabled flags live there:
+The node list is a standalone JSON file; the nodes added or removed in the WebUI live there, and removals of file/subscription nodes are recorded in a `removed` map:
 
 ```json
 {
@@ -101,10 +101,12 @@ The node list is a standalone JSON file; nodes added or removed in the WebUI and
       "uri": "http://user:pass@127.0.0.1:7890",
       "canonical": "http://user:pass@127.0.0.1:7890",
       "node_id": "9f2c...",
-      "enabled": true,
       "origin": "user",
       "added_at": 1759...
     }
+  },
+  "removed": {
+    "<canonical_uri>": {"removed_at": 1759...}
   }
 }
 ```
@@ -113,12 +115,12 @@ The node list is a standalone JSON file; nodes added or removed in the WebUI and
 proxy_pool_store_file = ./proxy_pool.json
 ```
 
-- Identity is the canonical URI: `HTTP://127.0.0.1:8001` and `http://127.0.0.1:8001` are the same node, and re-adding a node simply re-enables it.
-- `origin=user` is a node you added (removing it deletes the entry); `origin=source` is an enabled-state override for a file/subscription node (`enabled=false` blocks it, and restoring it drops the override record).
-- Add / remove / enable take effect **immediately**: no source reload and no Manager rebuild is needed, and a running scheduler sees the new node on its next lease acquisition. Hand-edited (or other-process) changes are picked up on the next read.
+- Identity is the canonical URI: `HTTP://127.0.0.1:8001` and `http://127.0.0.1:8001` are the same node, so re-adding a node never creates a second entry (and clears its deletion record).
+- `origin=user` is a node you added (removing it deletes the entry); file/subscription nodes are not owned by the store, so removing one records a deletion so the next source refresh does not re-add it (re-adding the same node clears the record).
+- Add / remove take effect **immediately**: no source reload and no Manager rebuild is needed, and a running scheduler sees the new node on its next lease acquisition. Hand-edited (or other-process) changes are picked up on the next read.
 - Writes are atomic (temp file + fsync + replace) with mode 0600; read-only usage never creates the file.
-- When the file does not exist, `proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` are imported once in memory (the first as enabled nodes, the second as block overrides) and persisted on the first change. After that the JSON list is authoritative and the two legacy keys no longer take effect (they stay in the config for compatibility with old files).
-- Blocking every node never silently falls back to a direct connection: `snapshot().error` reports `代理池没有可用节点` / `代理池节点均已被禁用` and `acquire()` raises it right away; an empty pool can still be extended by adding nodes.
+- When the file does not exist, `proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` are imported once in memory (the first as nodes you added, the second as deletion records) and persisted on the first change. After that the JSON list is authoritative and the two legacy keys no longer take effect (they stay in the config for compatibility with old files).
+- Removing every node never silently falls back to a direct connection: `snapshot().error` reports `代理池没有可用节点` / `代理池节点均已被移除: N 个节点在删除记录中` and `acquire()` raises it right away; an empty pool can still be extended by adding nodes.
 - When `proxy_mode` is not `pool`, "Add proxy" in the WebUI switches the mode to `pool` and says so; the pool only participates in scheduling in `single` / `pool` mode.
 
 ### `proxy_fallback`
@@ -461,13 +463,13 @@ proxy_pool_preflight_enabled = false
 
 ## Persistence: Node List and Health State
 
-The WebUI maintains **one proxy pool**: nodes parsed from `proxy_pool_subscription_url` are appended to it, and every node add/remove/restore (table buttons, chips, "Add proxy") happens on that same pool. `proxy_pool_file`, `proxy_pool_store_file` and `proxy_pool_state_file` are advanced/CLI settings and are **not shown in the WebUI** (leave them unset to use the defaults).
+The WebUI maintains **one proxy pool**: nodes parsed from `proxy_pool_subscription_url` are appended to it, and every node add/remove (table buttons, "Add proxy") happens on that same pool. `proxy_pool_file`, `proxy_pool_store_file` and `proxy_pool_state_file` are advanced/CLI settings and are **not shown in the WebUI** (leave them unset to use the defaults).
 
 The pool uses two JSON files with separate duties:
 
 | File | Content | Written by |
 | --- | --- | --- |
-| `proxy_pool_store_file` (default `./proxy_pool.json`) | Nodes you added plus enabled-state overrides for file/subscription nodes | You / the WebUI (hand-editable) |
+| `proxy_pool_store_file` (default `./proxy_pool.json`) | Nodes you added plus deletion records for removed file/subscription nodes | You / the WebUI (hand-editable) |
 | `proxy_pool_state_file` (default `./proxy_pool_state.json`) | Node business-health counters, Failure/Cooldown, recent business errors | The pool, automatically |
 
 See "Node list (JSON)" above for the node list. Health persistence is off by default:
@@ -505,7 +507,6 @@ POST   /api/proxy-pool/reload
 POST   /api/proxy-pool/test
 POST   /api/proxy-pool/nodes                  {"uri": "http://user:pass@127.0.0.1:7890"}
 DELETE /api/proxy-pool/nodes?canonical=<canonical-uri>
-POST   /api/proxy-pool/nodes/enabled          {"canonical": "...", "enabled": false}
 POST   /api/proxy-pool/preflight?node_id=<node-id>
 ```
 

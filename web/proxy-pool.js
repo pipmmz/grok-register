@@ -34,12 +34,12 @@
     proxySourceSummary:'订阅解析', proxyError:'最近错误', probeHealthy:'正常', probeUnhealthy:'异常',
     probeUnknown:'未探测', probeUnavailable:'运行时不可用', noBusinessSamples:'未产生业务样本', failedAfter:'后失败',
     proxyIPv4:'IPv4', proxyIPv6:'IPv6', proxyGatewayRate:'出口成功率', proxySamples:'样本', proxySuccessAttempts:'成功/尝试',
-    proxyActions:'操作', proxyRemove:'移除', proxyAdd:'添加代理', proxyRemoved:'已移除:', proxyRestoreAll:'全部恢复',
-    proxyRestore:'恢复', proxyManualPlaceholder:'http://user:pass@host:port 或 vless://… 支持任意受支持协议',
-    proxyNoneRemoved:'无', proxyAddEmpty:'请先填写代理地址', proxyAdded:'已加入代理池',
-    proxyDisabled:'已禁用（可从左侧恢复）', proxyAddFailed:'添加失败', proxyEnableAll:'正在恢复节点…',
+    proxyActions:'操作', proxyRemove:'移除', proxyAdd:'添加代理', 
+    proxyManualPlaceholder:'http://user:pass@host:port 或 vless://… 支持任意受支持协议',
+    proxyAddEmpty:'请先填写代理地址', proxyAdded:'已加入代理池',
+    proxyAddFailed:'添加失败', proxyRemovedDone:'已移除该节点',
     proxyConfigPending:'配置变更待生效(有代理租约占用,释放后自动生效)',
-    proxyLegacyRemoved:'旧配置键过滤', proxyLegacyHint:'来自 config.json 的 proxy_pool_disabled_nodes(已废弃):这些节点被它过滤掉了,清空该键即可恢复',
+    proxyLegacyRemoved:'旧配置键过滤',
   };
   const en = {
     tabProxy:'Proxy pool', proxyReload:'Reload', proxyTest:'Test nodes', proxyStatus:'Proxy node status',
@@ -49,12 +49,12 @@
     proxySourceSummary:'Subscription parse', proxyError:'Last error', probeHealthy:'Healthy', probeUnhealthy:'Unhealthy',
     probeUnknown:'Not probed', probeUnavailable:'Runtime unavailable', noBusinessSamples:'No business samples', failedAfter:'to failure',
     proxyIPv4:'IPv4', proxyIPv6:'IPv6', proxyGatewayRate:'Exit success', proxySamples:'Samples', proxySuccessAttempts:'OK / attempts',
-    proxyActions:'Actions', proxyRemove:'Remove', proxyAdd:'Add proxy', proxyRemoved:'Removed:', proxyRestoreAll:'Restore all',
-    proxyRestore:'Restore', proxyManualPlaceholder:'http://user:pass@host:port or vless://… any supported protocol',
-    proxyNoneRemoved:'none', proxyAddEmpty:'Enter a proxy address first', proxyAdded:'Added to the proxy pool',
-    proxyDisabled:'Disabled (restore it from the left)', proxyAddFailed:'Add failed', proxyEnableAll:'Restoring nodes…',
+    proxyActions:'Actions', proxyRemove:'Remove', proxyAdd:'Add proxy', 
+    proxyManualPlaceholder:'http://user:pass@host:port or vless://… any supported protocol',
+    proxyAddEmpty:'Enter a proxy address first', proxyAdded:'Added to the proxy pool',
+    proxyAddFailed:'Add failed', proxyRemovedDone:'Node removed',
     proxyConfigPending:'Config change pending (leases in use; applies automatically)',
-    proxyLegacyRemoved:'filtered by legacy key', proxyLegacyHint:'From config.json proxy_pool_disabled_nodes (deprecated): these nodes are filtered by it; clear that key to restore them',
+    proxyLegacyRemoved:'filtered by legacy key',
   };
   Object.assign(i18n.zh, zh); Object.assign(i18n.en, en);
   Object.assign(i18n.zh.fields, {
@@ -140,11 +140,6 @@
       <div class="proxy-manage">
         <input id="proxyManualInput" type="text" class="proxy-manual-input" placeholder="${t('proxyManualPlaceholder')}">
         <button type="button" id="proxyAddBtn" class="mini-btn" data-i18n="proxyAdd">${t('proxyAdd')}</button>
-        <span class="proxy-disabled">
-          <span class="proxy-disabled-label" data-i18n="proxyRemoved">${t('proxyRemoved')}</span>
-          <span id="proxyDisabledList"></span>
-          <button type="button" id="proxyClearDisabledBtn" class="mini-btn" data-i18n="proxyRestoreAll">${t('proxyRestoreAll')}</button>
-        </span>
       </div>
       <div class="proxy-table-wrap"><table class="proxy-table"><thead><tr>
         <th data-i18n="proxyNode">${t('proxyNode')}</th><th data-i18n="proxyProtocol">${t('proxyProtocol')}</th>
@@ -182,11 +177,10 @@
     const rows = document.getElementById('proxyPoolRows'); const summary = document.getElementById('proxyPoolSummary'); if (!rows || !summary) return;
     lastStatus = data || {};
     const nodes = Array.isArray(data.nodes) ? data.nodes : []; const store = (data && data.store) || {};
-    const storeText = store.disabled ? ` · ${store.disabled} ${t('proxyDisabled')}` : '';
     const sourceErrors = Object.entries(data.sources || {}).filter(([, source]) => source && source.error).map(([key, source]) => `${key}: ${source.error}`);
     const legacyText = legacyDisabledEntries(data).length ? ` · ${t('proxyLegacyRemoved')}: ${legacyDisabledEntries(data).length}` : '';
-    summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}${storeText}${legacyText}${data.error ? ' · ' + data.error : ''}${sourceErrors.length ? ' · ' + sourceErrors.join(' | ') : ''}${data.config_pending ? ' · ' + t('proxyConfigPending') : ''}`;
-    renderSourceSummary(data); renderDisabledList(data);
+    summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}${legacyText}${data.error ? ' · ' + data.error : ''}${sourceErrors.length ? ' · ' + sourceErrors.join(' | ') : ''}${data.config_pending ? ' · ' + t('proxyConfigPending') : ''}`;
+    renderSourceSummary(data);
     if (!nodes.length) { rows.innerHTML = `<tr><td colspan="14" class="proxy-empty">${esc(t('proxyEmpty'))}</td></tr>`; return; }
     rows.innerHTML = nodes.map(node => {
       const status = node.probe_status === 'healthy' ? 'good' : (node.probe_status === 'unhealthy' || node.probe_status === 'unavailable') ? 'bad' : '';
@@ -206,32 +200,13 @@
         <td>${esc(health)}</td><td>${esc(successAttempts)}</td><td>${esc(latency)}</td><td>${esc(node.exit_ip || '—')}</td>
         <td>${esc(node.inflight)}</td><td>${esc(failures)}</td><td>${node.rotating ? 'N/A' : (node.cooldown_sec ? esc(node.cooldown_sec)+' s' : '—')}</td>
         <td title="${esc(error)}">${esc(error)}</td>
-        <td>${node.enabled === false
-          ? `<button type="button" class="mini-btn proxy-restore" data-canonical="${esc(node.canonical || node.proxy)}">${esc(t('proxyRestore'))}</button>`
-          : `<button type="button" class="mini-btn proxy-remove" data-canonical="${esc(node.canonical || node.proxy)}">${esc(t('proxyRemove'))}</button>`}</td>
+        <td><button type="button" class="mini-btn proxy-remove" data-canonical="${esc(node.canonical || node.proxy)}">${esc(t('proxyRemove'))}</button></td>
       </tr>`;
     }).join('');
   }
   let lastStatus = {};
-  function shortUri(uri) { const text = String(uri || ''); return text.length > 42 ? text.slice(0, 39) + '…' : text; }
-  function storeNodes(data) {
-    return data && data.store && Array.isArray(data.store.nodes) ? data.store.nodes : [];
-  }
-  function disabledEntries(data) {
-    return storeNodes(data).filter(item => item && item.enabled === false);
-  }
   function legacyDisabledEntries(data) {
     return Array.isArray(data && data.disabled_legacy) ? data.disabled_legacy : [];
-  }
-  function renderDisabledList(data) {
-    const target = document.getElementById('proxyDisabledList'); if (!target) return;
-    const disabled = disabledEntries(data);
-    const legacy = legacyDisabledEntries(data);
-    const chips = disabled.map(item => `<button type="button" class="proxy-chip proxy-restore" data-canonical="${esc(item.canonical)}" title="${esc(item.uri)}">${esc(shortUri(item.uri))} ×</button>`);
-    const legacyChips = legacy.map(uri => `<span class="proxy-chip proxy-chip-legacy" title="${esc(t('proxyLegacyHint'))}">${esc(shortUri(uri))}</span>`);
-    target.innerHTML = (chips.length || legacyChips.length)
-      ? chips.join('') + legacyChips.join('')
-      : `<span class="proxy-chip-empty">${esc(t('proxyNoneRemoved'))}</span>`;
   }
   // 节点增删改都走代理池 JSON 清单接口，返回最新快照。
   async function poolNodeRequest(path, options) {
@@ -258,26 +233,7 @@
   async function removeNode(canonical) {
     const target = String(canonical || '').trim(); if (!target) return;
     const d = await poolNodeRequest('/api/proxy-pool/nodes?canonical=' + encodeURIComponent(target), { method: 'DELETE' });
-    if (d) setNotice(t('proxyRemoved'));
-  }
-  async function restoreNode(canonical) {
-    const target = String(canonical || '').trim(); if (!target) return;
-    const d = await poolNodeRequest('/api/proxy-pool/nodes/enabled', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ canonical: target, enabled: true }),
-    });
-    if (d) setNotice(t('saved'));
-  }
-  async function restoreAllNodes() {
-    const pending = disabledEntries(lastStatus);
-    if (!pending.length) return;
-    setNotice(t('proxyEnableAll'));
-    for (const item of pending) {
-      const d = await poolNodeRequest('/api/proxy-pool/nodes/enabled', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ canonical: item.canonical, enabled: true }),
-      });
-      if (!d) return;
-    }
-    setNotice(t('saved'));
+    if (d) setNotice(t('proxyRemovedDone'));
   }
   async function refreshProxyStatus() { try { const r = await fetch('/api/proxy-pool/status'); if (!r.ok) return; renderProxyStatus(await r.json()); } catch (_) {} }
   async function proxyAction(path) {
@@ -292,19 +248,10 @@
   if (addBtn) addBtn.onclick = () => addManualProxy().catch(e => setNotice(e.message, true));
   const manualInput = document.getElementById('proxyManualInput');
   if (manualInput) manualInput.onkeydown = (event) => { if (event.key === 'Enter') { event.preventDefault(); addManualProxy().catch(e => setNotice(e.message, true)); } };
-  const clearDisabledBtn = document.getElementById('proxyClearDisabledBtn');
-  if (clearDisabledBtn) clearDisabledBtn.onclick = () => restoreAllNodes().catch(e => setNotice(e.message, true));
   const poolRows = document.getElementById('proxyPoolRows');
   if (poolRows) poolRows.addEventListener('click', (event) => {
     const remove = event.target.closest('.proxy-remove');
-    if (remove) { removeNode(remove.dataset.canonical).catch(e => setNotice(e.message, true)); return; }
-    const restore = event.target.closest('.proxy-restore');
-    if (restore) restoreNode(restore.dataset.canonical).catch(e => setNotice(e.message, true));
-  });
-  const disabledList = document.getElementById('proxyDisabledList');
-  if (disabledList) disabledList.addEventListener('click', (event) => {
-    const btn = event.target.closest('.proxy-restore'); if (!btn) return;
-    restoreNode(btn.dataset.canonical).catch(e => setNotice(e.message, true));
+    if (remove) removeNode(remove.dataset.canonical).catch(e => setNotice(e.message, true));
   });
   const reloadBtn = document.getElementById('proxyReloadBtn'); const testBtn = document.getElementById('proxyTestBtn');
   if (reloadBtn) reloadBtn.onclick = () => proxyAction('/api/proxy-pool/reload');

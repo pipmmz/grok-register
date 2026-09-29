@@ -87,9 +87,10 @@ class ProxyPoolNodesWebTests(unittest.TestCase):
         self.assertEqual(payload["added"]["canonical"], "http://127.0.0.1:8001")
         self.assertEqual([node["canonical"] for node in payload["nodes"]], ["http://127.0.0.1:8001"])
         self.assertEqual(payload["added"]["origin"], "user")
-        self.assertTrue(payload["added"]["enabled"])
         self.assertEqual(self.saved[-1]["proxy_mode"], "pool")
-        self.assertEqual(self._store_payload()["nodes"]["http://127.0.0.1:8001"]["enabled"], True)
+        stored = self._store_payload()["nodes"]["http://127.0.0.1:8001"]
+        self.assertEqual(stored["origin"], "user")
+        self.assertNotIn("enabled", stored, "清单里不再保存启用/禁用状态")
 
         # 不同写法是同一个节点,不会重复入池
         again = self.client.post("/api/proxy-pool/nodes", json={"uri": "HTTP://127.0.0.1:8001"})
@@ -117,62 +118,40 @@ class ProxyPoolNodesWebTests(unittest.TestCase):
         canonical = added.json()["added"]["canonical"]
         self.assertTrue(canonical.startswith("vless://"))
 
-        disabled = self.client.post("/api/proxy-pool/nodes/enabled", json={"canonical": canonical, "enabled": False})
-        self.assertEqual(disabled.status_code, 200)
-        self.assertFalse(disabled.json()["nodes"][0]["enabled"])
-
-        restored = self.client.post("/api/proxy-pool/nodes/enabled", json={"canonical": canonical, "enabled": True})
-        self.assertEqual(restored.status_code, 200)
-        self.assertTrue(restored.json()["nodes"][0]["enabled"])
-
         removed = self.client.delete("/api/proxy-pool/nodes", params={"canonical": canonical})
         self.assertEqual(removed.status_code, 200)
         self.assertEqual(removed.json()["nodes"], [])
         self.assertEqual(removed.json()["store"]["total"], 0)
 
-    def test_remove_and_restore_node_round_trip(self):
+    def test_removed_node_is_gone_for_good(self):
+        """移除即删除:池里没有、清单里也不留条目,再查状态也不会回来。"""
         self.client.post("/api/proxy-pool/nodes", json={"uri": "http://127.0.0.1:8001"})
         removed = self.client.delete("/api/proxy-pool/nodes?canonical=http%3A%2F%2F127.0.0.1%3A8001")
         self.assertEqual(removed.status_code, 200)
         self.assertEqual(removed.json()["nodes"], [])
         self.assertEqual(self._store_payload()["nodes"], {})
 
-        self.client.post("/api/proxy-pool/nodes", json={"uri": "http://127.0.0.1:8001"})
-        disabled = self.client.post(
-            "/api/proxy-pool/nodes/enabled", json={"canonical": "http://127.0.0.1:8001", "enabled": False}
-        )
-        self.assertEqual(disabled.status_code, 200)
-        self.assertFalse(disabled.json()["nodes"][0]["enabled"])
-        self.assertEqual(disabled.json()["store"]["disabled"], 1)
-        # WebUI 的"已移除"chips 依赖清单条目列表
-        entries = {item["canonical"]: item for item in disabled.json()["store"]["nodes"]}
-        self.assertEqual(entries["http://127.0.0.1:8001"]["uri"], "http://127.0.0.1:8001")
-        self.assertFalse(entries["http://127.0.0.1:8001"]["enabled"])
+        status = self.client.get("/api/proxy-pool/status").json()
+        self.assertEqual(status["nodes"], [])
+        self.assertEqual(status["store"]["total"], 0)
 
-        restored = self.client.post(
-            "/api/proxy-pool/nodes/enabled", json={"canonical": "http://127.0.0.1:8001", "enabled": True}
-        )
-        self.assertTrue(restored.json()["nodes"][0]["enabled"])
-
-    def test_file_source_node_can_be_disabled_and_restored(self):
-        Path(self.pool_file).write_text("http://127.0.0.1:8002\n", encoding="utf-8")
+    def test_removed_file_source_node_is_not_readded(self):
+        """文件来源的节点移除后是彻底删除:清单不留条目,重新加载来源也不回来。"""
+        Path(self.pool_file).write_text("http://127.0.0.1:8002\nhttp://127.0.0.1:8003\n", encoding="utf-8")
         self._apply_config({"proxy_mode": "pool", "proxy_pool_file": self.pool_file})
         self._reset_manager()
 
         status = self.client.get("/api/proxy-pool/status").json()
-        self.assertEqual([node["canonical"] for node in status["nodes"]], ["http://127.0.0.1:8002"])
+        self.assertEqual(sorted(node["canonical"] for node in status["nodes"]), ["http://127.0.0.1:8002", "http://127.0.0.1:8003"])
 
         removed = self.client.delete("/api/proxy-pool/nodes?canonical=http%3A%2F%2F127.0.0.1%3A8002")
         self.assertEqual(removed.status_code, 200)
-        self.assertFalse(removed.json()["nodes"][0]["enabled"])
-        self.assertEqual(self._store_payload()["nodes"]["http://127.0.0.1:8002"]["origin"], "source")
-
-        restored = self.client.post(
-            "/api/proxy-pool/nodes/enabled", json={"canonical": "http://127.0.0.1:8002", "enabled": True}
+        self.assertEqual([node["canonical"] for node in removed.json()["nodes"]], ["http://127.0.0.1:8003"])
+        self.assertEqual(self._store_payload()["nodes"], {})   # 不留禁用条目
+        self.assertEqual(
+            [node["canonical"] for node in self.client.get("/api/proxy-pool/status").json()["nodes"]],
+            ["http://127.0.0.1:8003"],
         )
-        self.assertTrue(restored.json()["nodes"][0]["enabled"])
-        # 恢复后不再需要覆盖记录
-        self.assertEqual(self._store_payload()["nodes"], {})
 
     def test_reload_switches_auto_mode_to_pool_and_loads_subscription(self):
         """订阅已配置但模式不是 pool 时,重新加载必须真的加载节点,而不是静默空操作。"""
@@ -217,9 +196,6 @@ class ProxyPoolNodesWebTests(unittest.TestCase):
         try:
             self.assertEqual(self.client.post("/api/proxy-pool/nodes", json={"uri": "http://127.0.0.1:8001"}).status_code, 409)
             self.assertEqual(self.client.delete("/api/proxy-pool/nodes?canonical=http://127.0.0.1:8001").status_code, 409)
-            self.assertEqual(
-                self.client.post("/api/proxy-pool/nodes/enabled", json={"canonical": "http://127.0.0.1:8001"}).status_code, 409
-            )
         finally:
             with self.server._job_lock:
                 self.server._job_state["running"] = False

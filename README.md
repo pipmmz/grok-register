@@ -255,9 +255,9 @@ CLI 读取 `config.json`，通过校验后提示：
 | `user_agent` | Chromium 和请求使用的 User-Agent |
 | `proxy_mode` | `auto` / `direct` / `single` / `pool` |
 | `proxy` | 单代理地址；`auto` 模式下留空即直连 |
-| `proxy_pool_store_file` | 代理池节点清单 JSON（默认 `./proxy_pool.json`），WebUI 添加/移除的节点与启用状态都存在这里，改动立即生效（WebUI 不展示该路径，属高级/CLI 配置） |
+| `proxy_pool_store_file` | 代理池节点清单 JSON（默认 `./proxy_pool.json`），WebUI 添加/移除的节点与被删除的来源节点记录都存在这里，改动立即生效（WebUI 不展示该路径，属高级/CLI 配置） |
 | `proxy_pool_manual_entries` | 已废弃：仅在节点清单 JSON 首次创建时导入一次 |
-| `proxy_pool_disabled_nodes` | 已废弃：仅在节点清单 JSON 首次创建时导入为禁用覆盖 |
+| `proxy_pool_disabled_nodes` | 已废弃：仅在节点清单 JSON 首次创建时导入为删除记录 |
 | `multi_thread_enabled` | 是否启用并发注册，默认 `false` |
 | `multi_thread_workers` | 并发 worker 数，范围 `1–8` |
 
@@ -421,9 +421,9 @@ Cloud Mail 的 Public Token 直接放在 `Authorization` 请求头中，不需�
 }
 ```
 
-单个节点的增删不用改 `config.json`：WebUI 代理池页的「添加代理」把节点写进 `proxy_pool_store_file`（默认 `./proxy_pool.json`）并立即参与调度，每行的「移除 / 恢复」改的是同一个 JSON 里的启用状态；`proxy_mode` 不是 `pool` 时会自动切换并提示。「重新加载 / 测试节点」同样会在配置了订阅或代理池文件时自动切到 `pool`，否则明确报错而不是静默返回空池。节点清单文件可手工编辑，`proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` 已废弃（仅在该 JSON 首次创建时导入一次）。
+单个节点的增删不用改 `config.json`：WebUI 代理池页的「添加代理」把节点写进 `proxy_pool_store_file`（默认 `./proxy_pool.json`）并立即参与调度；每行的「移除」会把这个节点从池里**彻底删除**——用户添加的直接删条目，订阅/文件来源的留一条删除记录，所以「重新加载」也不会把它加回来（重新添加同一个节点即可恢复）。`proxy_mode` 不是 `pool` 时会自动切换并提示。「重新加载 / 测试节点」同样会在配置了订阅或代理池文件时自动切到 `pool`，否则明确报错而不是静默返回空池。节点清单文件可手工编辑，`proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` 已废弃（仅在该 JSON 首次创建时导入一次）。
 
-WebUI 只维护**一个代理池**：填「代理订阅 URL」后，解析出的节点会**附加**到这个池里（订阅节点同样能在表格里移除/恢复）；节点的增删改都在同一个池上完成。`proxy_pool_file` / `proxy_pool_store_file` / `proxy_pool_state_file` 这些**路径类键只在 `config.json` / CLI 里配置，WebUI 不展示**。
+WebUI 只维护**一个代理池**：填「代理订阅 URL」后，解析出的节点会**附加**到这个池里（订阅节点同样能在表格里移除）；节点的增删都在同一个池上完成。`proxy_pool_file` / `proxy_pool_store_file` / `proxy_pool_state_file` 这些**路径类键只在 `config.json` / CLI 里配置，WebUI 不展示**。
 
 代理源支持普通文本或整份 Base64 编码，解码后可以混合：
 

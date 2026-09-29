@@ -1,10 +1,14 @@
 """代理池节点存储:把用户维护的节点清单持久化为 JSON。
 
-存储只负责"节点清单"(用户添加的节点 + 对文件/订阅节点的启用/禁用覆盖),
+存储只负责"节点清单"(用户添加的节点 + 被删除的来源节点记录),
 健康计数仍然由 ``proxy_pool_state_file`` 单独保存。两者都是 JSON,但职责分离:
 
 - ``proxy_pool.json``     : 用户数据,可手工编辑,改动立即生效。
 - ``proxy_pool_state.json``: 运行期缓存,由池子自动写入。
+
+节点一旦从清单里移除就是真的删除,不存在"禁用/恢复"状态:
+用户添加的节点直接删条目;文件/订阅来源的节点在 ``removed`` 里留一条删除记录,
+避免下一次刷新又把它加回来(重新添加同一个节点即可恢复)。
 
 文件格式::
 
@@ -16,11 +20,13 @@
           "uri": "http://user:pass@127.0.0.1:7890",
           "canonical": "http://user:pass@127.0.0.1:7890",
           "node_id": "9f2c...",
-          "enabled": true,
           "origin": "user",          // user = 用户添加; source = 对文件/订阅节点的覆盖
           "added_at": 1759...,
           "note": ""
         }
+      },
+      "removed": {
+        "<canonical_uri>": {"removed_at": 1759...}
       }
     }
 
@@ -59,7 +65,6 @@ class StoredNode:
     uri: str
     canonical: str
     node_id: str
-    enabled: bool = True
     origin: str = ORIGIN_USER
     added_at: float = 0.0
     note: str = ""
@@ -69,7 +74,6 @@ class StoredNode:
             "uri": self.uri,
             "canonical": self.canonical,
             "node_id": self.node_id,
-            "enabled": bool(self.enabled),
             "origin": self.origin,
             "added_at": self.added_at,
             "note": self.note,
@@ -103,6 +107,8 @@ class ProxyPoolStore:
         self.log = log or (lambda message: None)
         self._lock = threading.RLock()
         self._nodes: Dict[str, StoredNode] = {}
+        # 已删除的节点标识:来源(文件/订阅)里的节点被删掉后,靠它避免刷新时又被加回来。
+        self._removed: Dict[str, float] = {}
         self._stamp: Optional[tuple] = None
         self._loaded = False
 
@@ -156,6 +162,7 @@ class ProxyPoolStore:
         if not isinstance(raw_nodes, dict):
             raise ProxyPoolStoreError("代理池文件 nodes 字段必须是对象: %s" % self.path)
         nodes: Dict[str, StoredNode] = {}
+        removed: Dict[str, float] = {}
         for key, value in raw_nodes.items():
             if not isinstance(value, dict):
                 continue
@@ -167,7 +174,10 @@ class ProxyPoolStore:
             except ProxyPoolStoreError as exc:
                 self.log("[!] 代理池文件跳过无法解析的节点 %s: %s" % (key, exc))
                 continue
-            node.enabled = bool(value.get("enabled", True))
+            if not bool(value.get("enabled", True)):
+                # 旧格式的禁用覆盖等价于删除
+                removed[node.canonical] = float(value.get("added_at") or 0.0)
+                continue
             origin = str(value.get("origin") or ORIGIN_USER).strip().lower()
             node.origin = origin if origin in (ORIGIN_USER, ORIGIN_SOURCE) else ORIGIN_USER
             try:
@@ -176,7 +186,14 @@ class ProxyPoolStore:
                 node.added_at = 0.0
             node.note = str(value.get("note") or "")
             nodes[node.canonical] = node
+        raw_removed = payload.get("removed") if isinstance(payload, dict) else None
+        if isinstance(raw_removed, dict):
+            for key, value in raw_removed.items():
+                canonical = str(key or "").strip()
+                if canonical:
+                    removed.setdefault(canonical, 0.0)
         self._nodes = nodes
+        self._removed = removed
         self._stamp = stamp
 
     def _migrate_legacy(self, nodes: Dict[str, StoredNode], legacy_manual, legacy_disabled) -> bool:
@@ -199,14 +216,10 @@ class ProxyPoolStore:
             except ProxyPoolStoreError as exc:
                 self.log("[!] 旧配置 proxy_pool_disabled_nodes 跳过无法解析的条目 %r: %s" % (item, exc))
                 continue
-            existing = nodes.get(node.canonical)
-            if existing is not None:
-                if existing.enabled:
-                    existing.enabled = False
-                    changed = True
-                continue
-            node.enabled, node.origin, node.added_at = False, ORIGIN_SOURCE, now
-            nodes[node.canonical] = node
+            # 旧配置里的"屏蔽"在新语义下等价于"已移除":留一条删除记录,
+            # 来源刷新也不会把它加回来。
+            nodes.pop(node.canonical, None)
+            self._removed[node.canonical] = now
             changed = True
         return changed
 
@@ -218,6 +231,7 @@ class ProxyPoolStore:
                 return False
             if stamp is None:
                 self._nodes = {}
+                self._removed = {}
                 self._stamp = None
                 return True
             self._read_file(stamp)
@@ -238,32 +252,46 @@ class ProxyPoolStore:
             node = self._nodes.get(canonical)
             return StoredNode(**node.as_dict()) if node is not None else None
 
-    def disabled_canonicals(self) -> set:
+    def mark_removed(self, uri: str) -> None:
+        """记录一个被删除的节点标识,避免来源刷新时又把它加回来。"""
+        try:
+            canonical = describe_uri(uri).canonical
+        except ProxyPoolStoreError:
+            canonical = str(uri or "").strip()
+        if not canonical:
+            return
         with self._lock:
             self.reload_if_changed()
-            return {node.canonical for node in self._nodes.values() if not node.enabled}
+            self._removed[canonical] = time.time()
+            self._write()
 
-    def enabled_user_entries(self) -> List[StoredNode]:
+    def removed_canonicals(self) -> set:
+        with self._lock:
+            self.reload_if_changed()
+            return set(self._removed)
+
+    def user_entries(self) -> List[StoredNode]:
         with self._lock:
             self.reload_if_changed()
             return [
                 StoredNode(**node.as_dict())
                 for node in self._nodes.values()
-                if node.enabled and node.origin == ORIGIN_USER
+                if node.origin == ORIGIN_USER
             ]
 
     # ---------------------------------------------------------------- 写
-    def add(self, uri: str, enabled: bool = True, origin: str = ORIGIN_USER, note: str = "") -> StoredNode:
-        """新增或重新启用一个节点;重复添加不会产生第二个节点。"""
+    def add(self, uri: str, origin: str = ORIGIN_USER, note: str = "") -> StoredNode:
+        """新增一个节点;重复添加(含重新添加已移除的节点)不会产生第二个节点。"""
         candidate = describe_uri(uri)
         with self._lock:
             self.reload_if_changed()
             existing = self._nodes.get(candidate.canonical)
             if existing is None and len(self._nodes) >= MAX_STORE_NODES:
                 raise ProxyPoolStoreError("代理池节点数量超过 %s 上限" % MAX_STORE_NODES)
+            # 重新添加等于撤销删除记录,来源刷新后节点会继续留在池里。
+            self._removed.pop(candidate.canonical, None)
             now = time.time()
             if existing is None:
-                candidate.enabled = bool(enabled)
                 candidate.origin = origin if origin in (ORIGIN_USER, ORIGIN_SOURCE) else ORIGIN_USER
                 candidate.added_at = now
                 candidate.note = note
@@ -271,7 +299,6 @@ class ProxyPoolStore:
             else:
                 existing.uri = candidate.uri
                 existing.node_id = candidate.node_id
-                existing.enabled = bool(enabled)
                 existing.origin = origin if origin in (ORIGIN_USER, ORIGIN_SOURCE) else existing.origin
                 if note:
                     existing.note = note
@@ -279,49 +306,24 @@ class ProxyPoolStore:
             self._write()
             return StoredNode(**candidate.as_dict())
 
-    def set_enabled(self, uri: str, enabled: bool) -> StoredNode:
-        """启用/禁用一个节点;文件/订阅节点会写入一条覆盖记录。"""
-        candidate = describe_uri(uri)
-        with self._lock:
-            self.reload_if_changed()
-            existing = self._nodes.get(candidate.canonical)
-            if existing is None:
-                if enabled:
-                    raise ProxyPoolStoreError("节点不在代理池中: %s" % candidate.canonical)
-                if len(self._nodes) >= MAX_STORE_NODES:
-                    raise ProxyPoolStoreError("代理池节点数量超过 %s 上限" % MAX_STORE_NODES)
-                candidate.enabled, candidate.origin, candidate.added_at = False, ORIGIN_SOURCE, time.time()
-                self._nodes[candidate.canonical] = candidate
-            else:
-                existing.enabled = bool(enabled)
-                candidate = existing
-                if enabled and existing.origin == ORIGIN_SOURCE:
-                    # 来源节点的默认状态就是启用,恢复后不再需要覆盖记录。
-                    self._nodes.pop(existing.canonical, None)
-            self._write()
-            return StoredNode(**candidate.as_dict())
-
     def remove(self, uri: str) -> Optional[StoredNode]:
-        """删除用户添加的节点;文件/订阅节点只写禁用覆盖(节点本身不归存储所有)。"""
+        """删除一个节点条目;文件/订阅来源的节点不归存储所有,返回 None。"""
         candidate = describe_uri(uri)
         with self._lock:
             self.reload_if_changed()
             existing = self._nodes.get(candidate.canonical)
             if existing is None:
                 return None
-            removed = StoredNode(**existing.as_dict())
-            if existing.origin == ORIGIN_USER:
-                self._nodes.pop(existing.canonical, None)
-            else:
-                existing.enabled = False
+            self._nodes.pop(existing.canonical, None)
             self._write()
-            return removed
+            return StoredNode(**existing.as_dict())
 
     def _write(self) -> None:
         payload = {
             "version": STORE_VERSION,
             "updated_at": time.time(),
             "nodes": {node.canonical: node.as_dict() for node in self._nodes.values()},
+            "removed": {canonical: {"removed_at": removed_at} for canonical, removed_at in self._removed.items()},
         }
         directory = os.path.dirname(os.path.abspath(self.path))
         os.makedirs(directory, exist_ok=True)
@@ -363,6 +365,6 @@ class ProxyPoolStore:
                 "path": self.path,
                 "nodes": [node.as_dict() for node in sorted(nodes, key=lambda item: item.canonical)],
                 "total": len(nodes),
-                "disabled": sum(1 for node in nodes if not node.enabled),
                 "user_nodes": sum(1 for node in nodes if node.origin == ORIGIN_USER),
+                "removed_nodes": len(self._removed),
             }

@@ -3,9 +3,4 @@
 @media(max-width:760px){.proxy-status-shell{margin:22px -16px -18px;padding:16px}.proxy-status-head{align-items:flex-start;flex-direction:column}.proxy-status-actions{margin-left:0}}
 .proxy-manage{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px}
 .proxy-manual-input{flex:1 1 320px;min-width:220px;padding:6px 9px;border:1px solid #2a2a30;border-radius:7px;background:#111114;color:inherit;font:inherit}
-.proxy-disabled{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;color:#85858d}
-.proxy-chip{border:1px solid #2a2a30;background:#15151a;color:inherit;border-radius:6px;padding:3px 7px;font-size:11px;cursor:pointer;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.proxy-chip:hover{border-color:#3d3d46;background:#1c1c22}
-.proxy-chip-empty{color:#5c5c66}
-.proxy-chip-legacy{border-style:dashed;color:#8a8a92;cursor:help}
 .proxy-table td:last-child{width:1%}

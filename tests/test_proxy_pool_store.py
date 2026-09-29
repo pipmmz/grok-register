@@ -6,7 +6,6 @@ import unittest
 from pathlib import Path
 
 from proxy_pool_store import (
-    ORIGIN_SOURCE,
     ORIGIN_USER,
     ProxyPoolStore,
     ProxyPoolStoreError,
@@ -26,12 +25,12 @@ class ProxyPoolStoreTests(unittest.TestCase):
             node = store.add("http://user:pass@127.0.0.1:7890")
             self.assertTrue(os.path.isfile(store.path))
             self.assertEqual(node.origin, ORIGIN_USER)
-            self.assertTrue(node.enabled)
 
             payload = json.loads(Path(store.path).read_text(encoding="utf-8"))
             self.assertEqual(payload["version"], 1)
             self.assertEqual(list(payload["nodes"]), ["http://user:pass@127.0.0.1:7890"])
             self.assertEqual(payload["nodes"]["http://user:pass@127.0.0.1:7890"]["origin"], ORIGIN_USER)
+            self.assertNotIn("enabled", payload["nodes"]["http://user:pass@127.0.0.1:7890"], "清单里不再有启用/禁用状态")
 
             with self.assertRaises(ProxyPoolStoreError):
                 store.add("   ")
@@ -39,36 +38,37 @@ class ProxyPoolStoreTests(unittest.TestCase):
                 store.add("not-a-proxy")
             self.assertEqual(len(store.entries()), 1)
 
-    def test_canonical_identity_dedupes_and_readding_reenables(self):
+    def test_canonical_identity_dedupes_and_readding_clears_the_removal_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = self._store(tmp)
             store.load()
             store.add("http://127.0.0.1:8001")
-            store.set_enabled("http://127.0.0.1:8001", False)
-            self.assertEqual(store.disabled_canonicals(), {"http://127.0.0.1:8001"})
+            store.remove("http://127.0.0.1:8001")
+            store.mark_removed("http://127.0.0.1:8001")
+            self.assertEqual(store.entries(), [])
+            self.assertEqual(store.removed_canonicals(), {"http://127.0.0.1:8001"})
 
             again = store.add("HTTP://127.0.0.1:8001")
             self.assertEqual(again.canonical, "http://127.0.0.1:8001")
-            self.assertTrue(again.enabled)
             self.assertEqual(len(store.entries()), 1)
-            self.assertEqual(store.disabled_canonicals(), set())
+            self.assertEqual(store.removed_canonicals(), set(), "重新添加同一个节点等于撤销删除记录")
 
-    def test_disable_and_remove_semantics_depend_on_origin(self):
+    def test_remove_deletes_user_entries_and_ignores_source_nodes(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = self._store(tmp)
             store.load()
             store.add("http://127.0.0.1:8001")
-            # 文件/订阅节点:只写禁用覆盖,条目保留
-            override = store.set_enabled("socks5://127.0.0.1:1080", False)
-            self.assertEqual(override.origin, ORIGIN_SOURCE)
-            self.assertIn("socks5://127.0.0.1:1080", store.disabled_canonicals())
-            store.set_enabled("socks5://127.0.0.1:1080", True)
-            self.assertNotIn("socks5://127.0.0.1:1080", store.disabled_canonicals())
+            # 文件/订阅来源的节点不归存储所有:既没有条目,也不会留下任何"禁用"状态。
+            self.assertIsNone(store.remove("socks5://127.0.0.1:1080"))
+            self.assertEqual(store.removed_canonicals(), set())
+            self.assertEqual([node.canonical for node in store.entries()], ["http://127.0.0.1:8001"])
 
             removed = store.remove("http://127.0.0.1:8001")
             self.assertEqual(removed.origin, ORIGIN_USER)
             self.assertEqual(store.entries(), [])
             self.assertIsNone(store.remove("http://127.0.0.1:8001"))
+            payload = json.loads(Path(store.path).read_text(encoding="utf-8"))
+            self.assertEqual(payload["nodes"], {})
 
     def test_legacy_config_lists_migrate_in_memory_then_persist_on_change(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,16 +77,15 @@ class ProxyPoolStoreTests(unittest.TestCase):
                 legacy_manual=["http://127.0.0.1:8001", "socks5://127.0.0.1:1080"],
                 legacy_disabled=["http://127.0.0.1:8001"],
             )
-            entries = {node.canonical: node for node in store.entries()}
-            self.assertEqual(sorted(entries), ["http://127.0.0.1:8001", "socks5://127.0.0.1:1080"])
-            self.assertFalse(entries["http://127.0.0.1:8001"].enabled)
-            self.assertEqual(entries["http://127.0.0.1:8001"].origin, ORIGIN_USER)
+            # 旧键里的"屏蔽"在新语义下等价于"已移除":不进入清单,但留下删除记录。
+            self.assertEqual([node.canonical for node in store.entries()], ["socks5://127.0.0.1:1080"])
+            self.assertEqual(store.removed_canonicals(), {"http://127.0.0.1:8001"})
             self.assertFalse(os.path.exists(store.path))          # 迁移本身不落盘
 
             store.add("http://127.0.0.1:8002")
             payload = json.loads(Path(store.path).read_text(encoding="utf-8"))
-            self.assertEqual(len(payload["nodes"]), 3)
-            self.assertFalse(payload["nodes"]["http://127.0.0.1:8001"]["enabled"])
+            self.assertEqual(sorted(payload["nodes"]), ["http://127.0.0.1:8002", "socks5://127.0.0.1:1080"])
+            self.assertEqual(sorted(payload["removed"]), ["http://127.0.0.1:8001"])
 
     def test_existing_file_wins_over_legacy_lists_and_external_edits_are_picked_up(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,9 +101,21 @@ class ProxyPoolStoreTests(unittest.TestCase):
 
             Path(path).write_text(json.dumps({
                 "version": 1,
-                "nodes": {"http://127.0.0.1:8003": {"uri": "http://127.0.0.1:8003", "enabled": True}},
+                "nodes": {"http://127.0.0.1:8003": {"uri": "http://127.0.0.1:8003"}},
             }), encoding="utf-8")
             self.assertEqual([node.canonical for node in reopened.entries()], ["http://127.0.0.1:8003"])
+
+    def test_legacy_disabled_entries_in_the_file_become_removal_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "proxy_pool.json")
+            Path(path).write_text(json.dumps({
+                "version": 1,
+                "nodes": {"http://127.0.0.1:8001": {"uri": "http://127.0.0.1:8001", "enabled": False}},
+            }), encoding="utf-8")
+            store = ProxyPoolStore(path)
+            store.load()
+            self.assertEqual(store.entries(), [])
+            self.assertEqual(store.removed_canonicals(), {"http://127.0.0.1:8001"})
 
     def test_corrupt_store_reports_actionable_error(self):
         with tempfile.TemporaryDirectory() as tmp:

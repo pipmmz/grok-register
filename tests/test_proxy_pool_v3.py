@@ -268,10 +268,6 @@ class ProxyPoolV3Tests(unittest.TestCase):
                 self.assertTrue(canonical.startswith("vless://"))
 
                 for reference in (canonical, node_id):
-                    manager.set_node_enabled(reference, False)
-                    self.assertFalse(manager.snapshot()["nodes"][0]["enabled"])
-                    manager.set_node_enabled(reference, True)
-                    self.assertTrue(manager.snapshot()["nodes"][0]["enabled"])
                     manager.remove_node(reference)
                     self.assertEqual(manager.snapshot()["nodes"], [])
                     self.assertEqual(manager.snapshot()["store"]["total"], 0)
@@ -282,25 +278,27 @@ class ProxyPoolV3Tests(unittest.TestCase):
             finally:
                 manager.shutdown()
 
-    def test_enabling_a_source_node_without_store_entry_only_restores_scheduling(self):
+    def test_removed_source_node_is_deleted_and_not_readded(self):
+        """来源(文件)里的节点移除后是彻底删除:池里没有,重新加载来源也不会回来。"""
         with tempfile.TemporaryDirectory() as tmp:
             store_file = os.path.join(tmp, "proxy_pool.json")
             pool_file = os.path.join(tmp, "proxies.txt")
-            Path(pool_file).write_text("http://127.0.0.1:8001\n", encoding="utf-8")
+            Path(pool_file).write_text("http://127.0.0.1:8001\nhttp://127.0.0.1:8002\n", encoding="utf-8")
             cfg = self.cfg(
                 proxy_mode="pool", proxy_pool_file=pool_file, proxy_pool_store_file=store_file,
                 proxy_pool_probe_interval_sec=0, proxy_pool_endpoint_mode="fixed",
             )
             manager = ProxyPoolManager(cfg)
             try:
-                node = manager.snapshot()["nodes"][0]
-                with manager._condition:            # 模拟运行时失败把来源节点禁用
-                    manager._nodes[node["id"]].enabled = False
-                self.assertFalse(manager.snapshot()["nodes"][0]["enabled"])
-                result = manager.set_node_enabled(node["canonical"], True)
-                self.assertTrue(result["enabled"])
-                self.assertTrue(manager.snapshot()["nodes"][0]["enabled"])
-                self.assertEqual(manager.snapshot()["store"]["total"], 0)   # 不写清单
+                self.assertEqual(
+                    sorted(n["canonical"] for n in manager.snapshot()["nodes"]),
+                    ["http://127.0.0.1:8001", "http://127.0.0.1:8002"],
+                )
+                manager.remove_node("http://127.0.0.1:8001")
+                self.assertEqual([n["canonical"] for n in manager.snapshot()["nodes"]], ["http://127.0.0.1:8002"])
+                manager.reload_sources(force=True)
+                self.assertEqual([n["canonical"] for n in manager.snapshot()["nodes"]], ["http://127.0.0.1:8002"])
+                self.assertEqual(manager.snapshot()["store"]["total"], 0)   # 清单里不留禁用条目
             finally:
                 manager.shutdown()
 
@@ -337,13 +335,14 @@ class ProxyPoolV3Tests(unittest.TestCase):
                     ["http://127.0.0.1:8001", "http://127.0.0.1:8002", "http://127.0.0.1:8003"],
                 )
 
-                # 手工禁用同样即时生效
+                # 手工/别的进程把节点从清单里删掉:同步后立刻离开池子
                 editor2 = ProxyPoolStore(store_file)
                 editor2.load()
-                editor2.set_enabled("http://127.0.0.1:8002", False)
+                editor2.remove("http://127.0.0.1:8002")
+                editor2.mark_removed("http://127.0.0.1:8002")
                 self.assertTrue(manager.sync_local_sources())
                 self.assertEqual(
-                    sorted(node["canonical"] for node in manager.snapshot()["nodes"] if node["enabled"]),
+                    sorted(node["canonical"] for node in manager.snapshot()["nodes"]),
                     ["http://127.0.0.1:8001", "http://127.0.0.1:8003"],
                 )
 
@@ -409,39 +408,32 @@ class ProxyPoolV3Tests(unittest.TestCase):
                 manager.add_node("HTTP://127.0.0.1:8001")
                 self.assertEqual(len(manager.snapshot()["nodes"]), 1)
 
-                # 禁用后立即不参与调度,但保留在清单里可恢复
-                manager.set_node_enabled("http://127.0.0.1:8001", False)
-                snapshot = manager.snapshot()
-                self.assertFalse(snapshot["nodes"][0]["enabled"])
-                self.assertEqual(snapshot["store"]["disabled"], 1)
-                manager.set_node_enabled("http://127.0.0.1:8001", True)
-                self.assertTrue(manager.snapshot()["nodes"][0]["enabled"])
-
                 # 用户添加的节点:移除即从清单删除
                 manager.remove_node("http://127.0.0.1:8001")
                 self.assertEqual(manager.snapshot()["nodes"], [])
+                self.assertEqual(manager.snapshot()["store"]["total"], 0)
 
-                # 文件源节点:移除写禁用覆盖,恢复后重新可用
+                # 文件源节点:移除后即使重新加载来源也不会回来
                 pool_file = os.path.join(tmp, "proxies.txt")
-                Path(pool_file).write_text("http://127.0.0.1:8002\n", encoding="utf-8")
+                Path(pool_file).write_text("http://127.0.0.1:8002\nhttp://127.0.0.1:8003\n", encoding="utf-8")
                 manager.config["proxy_pool_file"] = pool_file
                 manager.reload_sources(force=True)
-                self.assertEqual([node["canonical"] for node in manager.snapshot()["nodes"]], ["http://127.0.0.1:8002"])
+                self.assertEqual(
+                    sorted(node["canonical"] for node in manager.snapshot()["nodes"]),
+                    ["http://127.0.0.1:8002", "http://127.0.0.1:8003"],
+                )
                 manager.remove_node("http://127.0.0.1:8002")
-                disabled = manager.snapshot()["nodes"]
-                self.assertEqual([node["canonical"] for node in disabled], ["http://127.0.0.1:8002"])
-                self.assertFalse(disabled[0]["enabled"])
-                manager.set_node_enabled("http://127.0.0.1:8002", True)
-                self.assertEqual([node["canonical"] for node in manager.snapshot()["nodes"]], ["http://127.0.0.1:8002"])
-                self.assertTrue(manager.snapshot()["nodes"][0]["enabled"])
+                self.assertEqual([node["canonical"] for node in manager.snapshot()["nodes"]], ["http://127.0.0.1:8003"])
+                manager.reload_sources(force=True)
+                self.assertEqual([node["canonical"] for node in manager.snapshot()["nodes"]], ["http://127.0.0.1:8003"])
             finally:
                 manager.shutdown()
 
             restored = ProxyPoolManager(dict(cfg, proxy_pool_file=os.path.join(tmp, "proxies.txt")))
             try:
                 nodes = restored.snapshot()["nodes"]
-                self.assertEqual([node["canonical"] for node in nodes], ["http://127.0.0.1:8002"])
-                self.assertTrue(nodes[0]["enabled"])
+                # 重启后:被删除的 8002 不会回来,剩下的 8003 仍在池里
+                self.assertEqual([node["canonical"] for node in nodes], ["http://127.0.0.1:8003"])
             finally:
                 restored.shutdown()
 

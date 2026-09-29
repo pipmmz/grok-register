@@ -90,7 +90,7 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
 
 ### 节点清单（JSON）
 
-节点清单是一个独立的 JSON 文件，WebUI 添加/移除的节点和启用状态都存在这里：
+节点清单是一个独立的 JSON 文件，WebUI 添加/移除的节点和被删除的来源节点记录都存在这里：
 
 ```json
 {
@@ -101,10 +101,12 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
       "uri": "http://user:pass@127.0.0.1:7890",
       "canonical": "http://user:pass@127.0.0.1:7890",
       "node_id": "9f2c...",
-      "enabled": true,
       "origin": "user",
       "added_at": 1759...
     }
+  },
+  "removed": {
+    "socks5://127.0.0.1:1080": {"removed_at": 1759...}
   }
 }
 ```
@@ -113,12 +115,12 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
 proxy_pool_store_file = ./proxy_pool.json
 ```
 
-- 身份按规范化 URI（`canonical_uri`）判定：`HTTP://127.0.0.1:8001` 与 `http://127.0.0.1:8001` 是同一个节点，重复添加只会重新启用它。
-- `origin=user` 是用户添加的节点（移除即从文件删除）；`origin=source` 是对文件/订阅节点的启用状态覆盖（`enabled=false` 表示屏蔽；恢复为启用时该条覆盖记录会被删除）。
-- 添加/移除/启用都**立即生效**：不需要重新加载来源，也不需要重建 Manager，正在运行的调度会在下一次租约获取时看到新节点。文件被手工编辑（或另一个进程改动）后，下一次读取会自动重新载入。
+- 身份按规范化 URI（`canonical_uri`）判定：`HTTP://127.0.0.1:8001` 与 `http://127.0.0.1:8001` 是同一个节点，重复添加不会产生第二个节点。
+- **移除就是删除**，没有"禁用/恢复"状态：用户添加的节点（`origin=user`）直接从清单删条目；文件/订阅来源的节点不归清单所有，移除时在 `removed` 里留一条删除记录，来源刷新不会把它加回来，重新添加同一个节点即撤销该记录。
+- 添加/移除都**立即生效**：不需要重新加载来源，也不需要重建 Manager，正在运行的调度会在下一次租约获取时看到变化。文件被手工编辑（或另一个进程改动）后，下一次读取会自动重新载入。
 - 写文件使用「临时文件 + fsync + 原子替换」，权限 0600；只读场景不会创建文件。
-- 文件不存在时，`proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` 会在内存中导入一次（前者为启用节点，后者为屏蔽覆盖），并在第一次增删改时落盘；之后以 JSON 清单为准，这两个旧键不再生效（保留在配置里仅为兼容旧文件）。
-- 屏蔽全部节点不会静默降级为直连：`snapshot().error` 会给出 `代理池没有可用节点` / `代理池节点均已被禁用`，`acquire()` 立即抛出该错误；空池仍然可以继续添加节点。
+- 文件不存在时，`proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` 会在内存中导入一次（前者为启用节点，后者为删除记录），并在第一次增删改时落盘；之后以 JSON 清单为准，这两个旧键不再生效（保留在配置里仅为兼容旧文件）。旧格式清单里 `"enabled": false` 的条目同样按已移除处理。
+- 移除全部节点不会静默降级为直连：`snapshot().error` 会给出 `代理池没有可用节点` / `代理池节点均已被移除`，`acquire()` 立即抛出该错误；空池仍然可以继续添加节点。
 - WebUI 的「添加代理」在 `proxy_mode` 不是 `pool` 时会自动切换为 `pool` 并提示；代理池只在 `single` / `pool` 模式下参与调度。
 
 ### `proxy_fallback`
@@ -463,13 +465,13 @@ proxy_pool_preflight_enabled = false
 
 ## 持久化：节点清单与健康状态
 
-WebUI 只维护**一个代理池**：`proxy_pool_subscription_url` 解析出的节点会附加到池里，节点增删改（表格的「移除 / 恢复」、chips、「添加代理」）都在同一个池上完成；`proxy_pool_file` / `proxy_pool_store_file` / `proxy_pool_state_file` 属于高级/CLI 配置，**WebUI 不展示这些路径**（留空即用默认值）。
+WebUI 只维护**一个代理池**：`proxy_pool_subscription_url` 解析出的节点会附加到池里，节点增删（表格的「移除」、「添加代理」）都在同一个池上完成；`proxy_pool_file` / `proxy_pool_store_file` / `proxy_pool_state_file` 属于高级/CLI 配置，**WebUI 不展示这些路径**（留空即用默认值）。
 
 代理池有两个 JSON 文件，职责分开：
 
 | 文件 | 内容 | 谁写 |
 | --- | --- | --- |
-| `proxy_pool_store_file`（默认 `./proxy_pool.json`） | 用户添加的节点、对文件/订阅节点的启用状态覆盖 | 用户/WebUI（可手工编辑） |
+| `proxy_pool_store_file`（默认 `./proxy_pool.json`） | 用户添加的节点、被移除的来源节点删除记录 | 用户/WebUI（可手工编辑） |
 | `proxy_pool_state_file`（默认 `./proxy_pool_state.json`） | 节点业务健康计数、Failure/Cooldown、最近业务错误 | 池子自动写入 |
 
 节点清单见上文「节点清单（JSON）」。健康状态默认关闭：
@@ -507,11 +509,10 @@ POST   /api/proxy-pool/reload
 POST   /api/proxy-pool/test
 POST   /api/proxy-pool/nodes                  {"uri": "http://user:pass@127.0.0.1:7890"}
 DELETE /api/proxy-pool/nodes?canonical=<canonical-uri>
-POST   /api/proxy-pool/nodes/enabled          {"canonical": "...", "enabled": false}
 POST   /api/proxy-pool/preflight?node_id=<node-id>
 ```
 
-节点增删改接口会写 JSON 清单并立即更新调度,返回最新快照；`proxy_mode` 不是 `pool` 时，添加节点会自动切换为 `pool` 并在 `notice` 字段说明。「重新加载 / 测试节点」是显式的代理池操作：配置了订阅或代理池文件但模式不是 `pool` 时会自动切换（`notice` 说明），未配置任何来源则返回 400 而不是静默返回空池；配置已变更但仍有代理租约在使用时返回 409（快照里的 `config_pending` 会标记该状态，租约释放后的下一次状态查询会自动重建并生效）。注册任务运行期间这些接口返回 409（与其它维护操作一致）。接口的节点标识可以是原始 URI、canonical 或 node_id（WebUI 表格发的是 canonical；高级协议节点的 canonical 形如 `vless://<sha256>`，不是可解析的 URI）。
+节点增删接口会写 JSON 清单并立即更新调度,返回最新快照；`proxy_mode` 不是 `pool` 时，添加节点会自动切换为 `pool` 并在 `notice` 字段说明。删除是彻底移除：文件/订阅来源的节点会留下删除记录，`reload` 不会让它复活。「重新加载 / 测试节点」是显式的代理池操作：配置了订阅或代理池文件但模式不是 `pool` 时会自动切换（`notice` 说明），未配置任何来源则返回 400 而不是静默返回空池；配置已变更但仍有代理租约在使用时返回 409（快照里的 `config_pending` 会标记该状态，租约释放后的下一次状态查询会自动重建并生效）。注册任务运行期间这些接口返回 409（与其它维护操作一致）。接口的节点标识可以是原始 URI、canonical 或 node_id（WebUI 表格发的是 canonical；高级协议节点的 canonical 形如 `vless://<sha256>`，不是可解析的 URI）。
 
 项目当前本地使用模式下，WebUI、状态 API 和相关日志继续显示完整代理地址，包括认证信息。
 
