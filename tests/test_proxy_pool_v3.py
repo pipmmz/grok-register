@@ -459,6 +459,8 @@ class ProxyPoolV3Tests(unittest.TestCase):
                 snapshot = manager.snapshot()
                 self.assertEqual(snapshot["nodes"], [])
                 self.assertIn("代理池", snapshot["error"])
+                # 旧配置键过滤掉的节点必须能在快照里看到,否则节点"凭空消失"无从排查
+                self.assertEqual(snapshot["disabled_legacy"], ["http://127.0.0.1:8001"])
                 with self.assertRaises(ProxyPoolError):
                     manager.acquire("a", "w", 1, 1, "s", timeout=1)
 

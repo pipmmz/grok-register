@@ -319,6 +319,8 @@ class ProxyPoolManager:
         self._store_ready = False
         self._assembly_error = ""
         self.config_pending = False
+        self._legacy_disabled = []
+        self._legacy_disabled_warned = False
         self._local_stamp = None
         self._runtime = ProtocolRuntimeManager(self.config, log=self.log)
         try:
@@ -553,7 +555,9 @@ class ProxyPoolManager:
             if descriptor.node_id not in seen:
                 seen.add(descriptor.node_id); unique.append((source, descriptor))
         self._source_diagnostics = {name: dict(state.diagnostics) for name, state in self._source_states.items() if state.configured}
-        disabled = self._disabled_uris() | self._store_disabled_uris()
+        legacy_disabled = self._legacy_disabled_uris()
+        self._legacy_disabled = sorted(legacy_disabled)
+        disabled = legacy_disabled | self._store_disabled_uris()
         if disabled:
             unique = [(source, descriptor) for source, descriptor in unique if descriptor.canonical_uri not in disabled]
         if not unique:
@@ -567,8 +571,19 @@ class ProxyPoolManager:
             raise ProxyPoolError("代理池没有可用节点: %s" % detail)
         return unique
 
-    def _disabled_uris(self):
-        return {str(item).strip() for item in (self.config.get("proxy_pool_disabled_nodes") or []) if str(item).strip()}
+    def _legacy_disabled_uris(self):
+        """已废弃的 config.json 键 proxy_pool_disabled_nodes:仍生效,但 WebUI 的已移除列表只显示节点清单条目。
+
+        这里同时把它暴露到 snapshot().disabled_legacy,避免"节点凭空消失却看不到原因"。
+        """
+        values = {str(item).strip() for item in (self.config.get("proxy_pool_disabled_nodes") or []) if str(item).strip()}
+        if values and not getattr(self, "_legacy_disabled_warned", False):
+            self._legacy_disabled_warned = True
+            self.log(
+                "[!] config.json 的 proxy_pool_disabled_nodes 已废弃但仍生效: %s 个节点被它过滤;"
+                "请在代理池节点清单里禁用/恢复节点,并清空该键" % len(values)
+            )
+        return values
 
     def _store_disabled_uris(self):
         if not self._ensure_store():
@@ -1249,7 +1264,7 @@ class ProxyPoolManager:
                 store.update({key: summary[key] for key in ("total", "disabled", "user_nodes", "nodes")})
             except ProxyPoolStoreError as exc:
                 store["error"] = str(exc)
-            return {"mode": self.mode, "managed": self.managed, "fallback": self.fallback, "capacity": self.capacity, "nodes": nodes, "sources": dict(self._source_diagnostics), "runtime": self._runtime.active_snapshot(), "persist_health": self.persist_health, "store": store, "error": self._assembly_error, "config_pending": bool(self.config_pending)}
+            return {"mode": self.mode, "managed": self.managed, "fallback": self.fallback, "capacity": self.capacity, "nodes": nodes, "sources": dict(self._source_diagnostics), "runtime": self._runtime.active_snapshot(), "persist_health": self.persist_health, "store": store, "error": self._assembly_error, "config_pending": bool(self.config_pending), "disabled_legacy": list(self._legacy_disabled)}
 
 
 def get_manager(config=None, log=None):

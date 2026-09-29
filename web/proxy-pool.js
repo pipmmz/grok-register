@@ -43,6 +43,7 @@
     proxyDisabled:'已禁用（可从左侧恢复）', proxyAddFailed:'添加失败', proxyEnableAll:'正在恢复节点…',
     proxyStoreHint:'节点清单文件', proxySrcSubscription:'订阅', proxySrcFile:'文件', proxySrcManual:'清单', proxySrcSingle:'单代理',
     proxyConfigPending:'配置变更待生效(有代理租约占用,释放后自动生效)',
+    proxyLegacyRemoved:'旧配置键过滤', proxyLegacyHint:'来自 config.json 的 proxy_pool_disabled_nodes(已废弃):这些节点被它过滤掉了,清空该键即可恢复',
   };
   const en = {
     tabProxy:'Proxy pool', proxyReload:'Reload', proxyTest:'Test nodes', proxyStatus:'Proxy node status',
@@ -58,6 +59,7 @@
     proxyDisabled:'Disabled (restore it from the left)', proxyAddFailed:'Add failed', proxyEnableAll:'Restoring nodes…',
     proxyStoreHint:'Node list file', proxySrcSubscription:'sub', proxySrcFile:'file', proxySrcManual:'list', proxySrcSingle:'single',
     proxyConfigPending:'Config change pending (leases in use; applies automatically)',
+    proxyLegacyRemoved:'filtered by legacy key', proxyLegacyHint:'From config.json proxy_pool_disabled_nodes (deprecated): these nodes are filtered by it; clear that key to restore them',
   };
   Object.assign(i18n.zh, zh); Object.assign(i18n.en, en);
   Object.assign(i18n.zh.fields, {
@@ -193,7 +195,8 @@
     const nodes = Array.isArray(data.nodes) ? data.nodes : []; const store = (data && data.store) || {};
     const storeText = store.total ? ` · ${t('proxyStoreHint')}: ${store.total}${store.disabled ? ` · ${store.disabled} ${t('proxyDisabled')}` : ''}` : '';
     const sourceErrors = Object.entries(data.sources || {}).filter(([, source]) => source && source.error).map(([key, source]) => `${key}: ${source.error}`);
-    summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}${storeText}${data.error ? ' · ' + data.error : ''}${sourceErrors.length ? ' · ' + sourceErrors.join(' | ') : ''}${data.config_pending ? ' · ' + t('proxyConfigPending') : ''}`;
+    const legacyText = legacyDisabledEntries(data).length ? ` · ${t('proxyLegacyRemoved')}: ${legacyDisabledEntries(data).length}` : '';
+    summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}${storeText}${legacyText}${data.error ? ' · ' + data.error : ''}${sourceErrors.length ? ' · ' + sourceErrors.join(' | ') : ''}${data.config_pending ? ' · ' + t('proxyConfigPending') : ''}`;
     renderSourceSummary(data); renderDisabledList(data);
     if (!nodes.length) { rows.innerHTML = `<tr><td colspan="14" class="proxy-empty">${esc(t('proxyEmpty'))}</td></tr>`; return; }
     rows.innerHTML = nodes.map(node => {
@@ -229,11 +232,17 @@
   function disabledEntries(data) {
     return storeNodes(data).filter(item => item && item.enabled === false);
   }
+  function legacyDisabledEntries(data) {
+    return Array.isArray(data && data.disabled_legacy) ? data.disabled_legacy : [];
+  }
   function renderDisabledList(data) {
     const target = document.getElementById('proxyDisabledList'); if (!target) return;
     const disabled = disabledEntries(data);
-    target.innerHTML = disabled.length
-      ? disabled.map(item => `<button type="button" class="proxy-chip proxy-restore" data-canonical="${esc(item.canonical)}" title="${esc(item.uri)}">${esc(shortUri(item.uri))} ×</button>`).join('')
+    const legacy = legacyDisabledEntries(data);
+    const chips = disabled.map(item => `<button type="button" class="proxy-chip proxy-restore" data-canonical="${esc(item.canonical)}" title="${esc(item.uri)}">${esc(shortUri(item.uri))} ×</button>`);
+    const legacyChips = legacy.map(uri => `<span class="proxy-chip proxy-chip-legacy" title="${esc(t('proxyLegacyHint'))}">${esc(shortUri(uri))}</span>`);
+    target.innerHTML = (chips.length || legacyChips.length)
+      ? chips.join('') + legacyChips.join('')
       : `<span class="proxy-chip-empty">${esc(t('proxyNoneRemoved'))}</span>`;
   }
   // 节点增删改都走代理池 JSON 清单接口，返回最新快照。
