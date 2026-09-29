@@ -41,7 +41,7 @@
     proxyRestore:'恢复', proxyManualPlaceholder:'http://user:pass@host:port 或 vless://… 支持任意受支持协议',
     proxyNoneRemoved:'无', proxyAddEmpty:'请先填写代理地址', proxyAdded:'已加入代理池',
     proxyDisabled:'已禁用（可从左侧恢复）', proxyAddFailed:'添加失败', proxyEnableAll:'正在恢复节点…',
-    proxyStoreHint:'节点清单文件',
+    proxyStoreHint:'节点清单文件', proxySrcSubscription:'订阅', proxySrcFile:'文件', proxySrcManual:'清单', proxySrcSingle:'单代理',
   };
   const en = {
     tabProxy:'Proxy pool', proxyReload:'Reload', proxyTest:'Test nodes', proxyStatus:'Proxy node status',
@@ -55,7 +55,7 @@
     proxyRestore:'Restore', proxyManualPlaceholder:'http://user:pass@host:port or vless://… any supported protocol',
     proxyNoneRemoved:'none', proxyAddEmpty:'Enter a proxy address first', proxyAdded:'Added to the proxy pool',
     proxyDisabled:'Disabled (restore it from the left)', proxyAddFailed:'Add failed', proxyEnableAll:'Restoring nodes…',
-    proxyStoreHint:'Node list file',
+    proxyStoreHint:'Node list file', proxySrcSubscription:'sub', proxySrcFile:'file', proxySrcManual:'list', proxySrcSingle:'single',
   };
   Object.assign(i18n.zh, zh); Object.assign(i18n.en, en);
   Object.assign(i18n.zh.fields, {
@@ -204,8 +204,9 @@
       const successAttempts = `${successes}/${attempts}${node.success_rate == null ? '' : ' · ' + Math.round(Number(node.success_rate) * 1000) / 10 + '%'}`;
       const error = node.probe_error || node.last_error || '—';
       const failures = node.rotating ? `${node.exit_failures || 0} exits` : `${node.failure_count || 0} · transport=${node.transport_failures || 0} · config=${node.configuration_failures || 0}`;
+      const sourceLabel = { subscription: t('proxySrcSubscription'), file: t('proxySrcFile'), manual: t('proxySrcManual'), single: t('proxySrcSingle') }[node.source] || '';
       return `<tr>
-        <td title="${esc(node.id)}"><span class="proxy-dot ${status}"></span>${esc(label)}</td>
+        <td title="${esc(node.id)}"><span class="proxy-dot ${status}"></span>${sourceLabel ? `<span class="proxy-src" title="${esc(node.source)}">${esc(sourceLabel)}</span>` : ''}${esc(label)}</td>
         <td>${esc(node.protocol || '—')}</td><td>${esc(node.core || node.backend || 'native')}</td>
         <td>${node.rotating ? 'rotating gateway' : 'fixed'}</td><td>${esc(probeText(node.probe_status))}</td>
         <td>${esc(health)}</td><td>${esc(successAttempts)}</td><td>${esc(latency)}</td><td>${esc(node.exit_ip || '—')}</td>
@@ -283,7 +284,7 @@
     if (dirty.size && !await saveConfig()) return;
     const reload = document.getElementById('proxyReloadBtn'); const test = document.getElementById('proxyTestBtn');
     if (reload) reload.disabled = true; if (test) test.disabled = true;
-    try { const r = await fetch(path,{method:'POST'}); const d = await r.json(); if (!r.ok) setNotice(d.detail || 'Proxy pool operation failed', true); else { renderProxyStatus(d); setNotice(''); } }
+    try { const r = await fetch(path,{method:'POST'}); const d = await r.json(); if (!r.ok) setNotice(d.detail || 'Proxy pool operation failed', true); else { renderProxyStatus(d); setNotice(d.notice || ''); } }
     catch (e) { setNotice(e.message, true); }
     finally { if (reload) reload.disabled = !!running; if (test) test.disabled = !!running; }
   }

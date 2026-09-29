@@ -298,6 +298,28 @@ async def test_outlook_mailboxes(request: Request):
     return JSONResponse({"ok": True, **summary})
 
 
+def _activate_pool_sources(cfg: dict[str, Any]) -> str:
+    """重新加载/测试是显式的代理池操作:配置了来源但模式不是 pool 时自动切换。
+
+    否则请求会静默返回空池(非 pool 模式不读取任何来源),用户看到的就是"点了没反应"。
+    """
+    from proxy_pool import pool_sources_configured
+
+    if str(cfg.get("proxy_mode") or "").strip().lower() == "pool":
+        return ""
+    if not pool_sources_configured(cfg):
+        raise HTTPException(
+            status_code=400,
+            detail="代理池未配置任何来源(proxy_pool_file / proxy_pool_subscription_url / 节点清单),当前代理模式是 %s" % (cfg.get("proxy_mode") or "auto"),
+        )
+    cfg["proxy_mode"] = "pool"
+    engine.config.clear()
+    engine.config.update(cfg)
+    engine.save_config()
+    _append_log("[*] 代理模式已切换为 pool,代理池来源将参与注册")
+    return "代理模式已切换为 pool"
+
+
 @app.get("/api/proxy-pool/status")
 def proxy_pool_status():
     from proxy_pool import manager_snapshot
@@ -314,14 +336,17 @@ def proxy_pool_reload():
         engine.load_config()
         try:
             cfg = engine.validate_config_structure(dict(engine.config))
+            notice = _activate_pool_sources(cfg)
             manager = get_manager(config=cfg, log=_append_log)
             snapshot = manager.reload_sources(force=True)
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         _end_maintenance(kind)
     _append_log("[*] 代理池已重新加载")
-    return {"ok": True, **snapshot}
+    return {"ok": True, "notice": notice, **snapshot}
 
 
 @app.post("/api/proxy-pool/test")
@@ -333,15 +358,18 @@ def proxy_pool_test():
         engine.load_config()
         try:
             cfg = engine.validate_config_structure(dict(engine.config))
+            notice = _activate_pool_sources(cfg)
             manager = get_manager(config=cfg, log=_append_log)
             manager.reload_sources(force=True)
             results = manager.probe_all(force=True)
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         _end_maintenance(kind)
     _append_log("[*] 代理池测试完成: %s 个节点" % len(results))
-    return {"ok": True, "results": results, **manager.snapshot()}
+    return {"ok": True, "notice": notice, "results": results, **manager.snapshot()}
 
 
 @app.post("/api/proxy-pool/nodes")

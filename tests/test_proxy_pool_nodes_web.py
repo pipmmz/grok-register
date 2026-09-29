@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 try:
     from fastapi.testclient import TestClient
@@ -173,6 +173,29 @@ class ProxyPoolNodesWebTests(unittest.TestCase):
         self.assertTrue(restored.json()["nodes"][0]["enabled"])
         # 恢复后不再需要覆盖记录
         self.assertEqual(self._store_payload()["nodes"], {})
+
+    def test_reload_switches_auto_mode_to_pool_and_loads_subscription(self):
+        """订阅已配置但模式不是 pool 时,重新加载必须真的加载节点,而不是静默空操作。"""
+        self._apply_config({"proxy_pool_subscription_url": "http://sub.test/list"})
+        self._reset_manager()
+        response = Mock(status_code=200, text="http://1.2.3.4:8080\nsocks5://5.6.7.8:1080\n", headers={})
+        with patch("proxy_pool.requests.get", return_value=response):
+            reloaded = self.client.post("/api/proxy-pool/reload")
+        self.assertEqual(reloaded.status_code, 200)
+        payload = reloaded.json()
+        self.assertEqual(payload["notice"], "代理模式已切换为 pool")
+        self.assertEqual(payload["mode"], "pool")
+        self.assertEqual(
+            sorted(node["canonical"] for node in payload["nodes"]),
+            ["http://1.2.3.4:8080", "socks5://5.6.7.8:1080"],
+        )
+        self.assertEqual(payload["sources"]["subscription"]["supported"], 2)
+        self.assertEqual(self.saved[-1]["proxy_mode"], "pool")
+
+    def test_reload_without_any_source_reports_instead_of_silent_noop(self):
+        response = self.client.post("/api/proxy-pool/reload")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("未配置任何来源", response.json()["detail"])
 
     def test_node_endpoints_are_rejected_while_a_job_runs(self):
         with self.server._job_lock:

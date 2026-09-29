@@ -142,6 +142,22 @@ def _config_signature(config):
     return tuple((key, config.get(key)) for key in keys)
 
 
+def pool_sources_configured(config) -> bool:
+    """配置了订阅 / 代理池文件 / 节点清单文件中的任意一个来源。"""
+    data = config or {}
+    if str(data.get("proxy_pool_subscription_url") or "").strip():
+        return True
+    if str(data.get("proxy_pool_file") or "").strip():
+        return True
+    store_file = str(data.get("proxy_pool_store_file") or "").strip()
+    if not store_file:
+        return False
+    try:
+        return os.path.exists(resolve_store_path(store_file))
+    except Exception:
+        return False
+
+
 def normalize_proxy_url(value):
     raw = str(value or "").strip()
     if not raw:
@@ -539,7 +555,10 @@ class ProxyPoolManager:
         if not unique:
             if values and disabled:
                 raise ProxyPoolError("代理池节点均已被禁用: %s 个节点在代理池清单或 proxy_pool_disabled_nodes 中" % len(disabled))
-            errors = [state.last_error for state in self._source_states.values() if state.last_error]
+            errors = [
+                "%s: %s" % (name, state.last_error)
+                for name, state in self._source_states.items() if state.last_error
+            ]
             detail = "; ".join(errors) if errors else "未配置代理池文件、订阅或节点清单"
             raise ProxyPoolError("代理池没有可用节点: %s" % detail)
         return unique

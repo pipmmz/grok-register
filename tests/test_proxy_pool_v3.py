@@ -103,6 +103,23 @@ class ProxyPoolV3Tests(unittest.TestCase):
             self.assertEqual(node["business_samples"], 1)
             restored.shutdown()
 
+    def test_empty_pool_error_names_the_failing_source(self):
+        """订阅已配置但没解析出节点时,错误要指向订阅来源,而不是笼统地说"未配置"。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(
+                proxy_mode="pool", proxy_pool_subscription_url="http://sub.test/list",
+                proxy_pool_store_file=os.path.join(tmp, "proxy_pool.json"), proxy_pool_probe_interval_sec=0,
+            )
+            response = Mock(status_code=200, text="<html>not a proxy list</html>\n", headers={})
+            with patch("proxy_pool.requests.get", return_value=response):
+                manager = ProxyPoolManager(cfg)
+                try:
+                    error = manager.snapshot()["error"]
+                    self.assertTrue(error.startswith("代理池没有可用节点: subscription: "), error)
+                    self.assertIn("proxy URL is missing scheme or port", error)
+                finally:
+                    manager.shutdown()
+
     def test_subscription_public_only_rejects_loopback(self):
         cfg = self.cfg(
             proxy_mode="pool", proxy_pool_subscription_url="http://local.test/list",

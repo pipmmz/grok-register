@@ -145,7 +145,7 @@ class WebControlPlaneTests(unittest.TestCase):
 
     def test_proxy_test_blocks_registration_start_for_full_probe_window(self):
         cfg = self._base_config()
-        cfg.update({"proxy_mode": "single", "proxy": "http://127.0.0.1:7890"})
+        cfg.update({"proxy_mode": "pool"})
         entered = threading.Event()
         release = threading.Event()
         responses = []
@@ -183,7 +183,7 @@ class WebControlPlaneTests(unittest.TestCase):
 
     def test_proxy_pool_reload_and_probe_use_shared_manager(self):
         cfg = self._base_config()
-        cfg.update({"proxy_mode": "single", "proxy": "http://127.0.0.1:7890"})
+        cfg.update({"proxy_mode": "pool"})
 
         class FakeManager:
             def reload_sources(self, force=False):

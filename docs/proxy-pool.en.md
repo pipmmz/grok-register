@@ -507,7 +507,7 @@ POST   /api/proxy-pool/nodes/enabled          {"canonical": "...", "enabled": fa
 POST   /api/proxy-pool/preflight?node_id=<node-id>
 ```
 
-The node endpoints write the JSON list, update scheduling immediately and return the fresh snapshot; when `proxy_mode` is not `pool`, adding a node switches the mode to `pool` and explains it in the `notice` field. While a registration task is running these endpoints return 409, like the other maintenance operations. A node reference may be the raw URI, the canonical URI or the node id (the WebUI table sends the canonical URI; for advanced protocols it looks like `vless://<sha256>` and is not a parseable URI).
+The node endpoints write the JSON list, update scheduling immediately and return the fresh snapshot; when `proxy_mode` is not `pool`, adding a node switches the mode to `pool` and explains it in the `notice` field. Reload / Test nodes are explicit proxy-pool actions: with a subscription or pool file configured but the mode not `pool`, they switch the mode the same way (`notice` explains it), and with no source configured at all they return 400 instead of silently returning an empty pool. While a registration task is running these endpoints return 409, like the other maintenance operations. A node reference may be the raw URI, the canonical URI or the node id (the WebUI table sends the canonical URI; for advanced protocols it looks like `vless://<sha256>` and is not a parseable URI).
 
 Under the project's current local-use model, the WebUI, status API, and related logs continue to display full proxy addresses, including authentication information.
 

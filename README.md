@@ -421,7 +421,7 @@ Cloud Mail 的 Public Token 直接放在 `Authorization` 请求头中，不需�
 }
 ```
 
-单个节点的增删不用改 `config.json`：WebUI 代理池页的「添加代理」把节点写进 `proxy_pool_store_file`（默认 `./proxy_pool.json`）并立即参与调度，每行的「移除 / 恢复」改的是同一个 JSON 里的启用状态；`proxy_mode` 不是 `pool` 时会自动切换并提示。节点清单文件可手工编辑，`proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` 已废弃（仅在该 JSON 首次创建时导入一次）。
+单个节点的增删不用改 `config.json`：WebUI 代理池页的「添加代理」把节点写进 `proxy_pool_store_file`（默认 `./proxy_pool.json`）并立即参与调度，每行的「移除 / 恢复」改的是同一个 JSON 里的启用状态；`proxy_mode` 不是 `pool` 时会自动切换并提示。「重新加载 / 测试节点」同样会在配置了订阅或代理池文件时自动切到 `pool`，否则明确报错而不是静默返回空池。节点清单文件可手工编辑，`proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` 已废弃（仅在该 JSON 首次创建时导入一次）。
 
 代理源支持普通文本或整份 Base64 编码，解码后可以混合：
 

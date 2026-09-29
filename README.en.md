@@ -421,7 +421,7 @@ Native proxy:
 }
 ```
 
-Adding or removing a single node no longer means editing `config.json`: "Add proxy" on the WebUI proxy-pool page writes the node into `proxy_pool_store_file` (default `./proxy_pool.json`) and it joins scheduling immediately, while the per-row Remove / Restore buttons flip the enabled flag in that same JSON; when `proxy_mode` is not `pool` the mode is switched automatically and reported. The node-list file can be edited by hand; `proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` are deprecated (imported once when that JSON is first created).
+Adding or removing a single node no longer means editing `config.json`: "Add proxy" on the WebUI proxy-pool page writes the node into `proxy_pool_store_file` (default `./proxy_pool.json`) and it joins scheduling immediately, while the per-row Remove / Restore buttons flip the enabled flag in that same JSON; when `proxy_mode` is not `pool` the mode is switched automatically and reported. Reload / Test nodes behave the same way when a subscription or pool file is configured, and report an error instead of silently returning an empty pool otherwise. The node-list file can be edited by hand; `proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` are deprecated (imported once when that JSON is first created).
 
 Proxy sources can be plain text or an entire Base64-encoded document. After decoding, they may contain mixed protocols:
 

@@ -509,7 +509,7 @@ POST   /api/proxy-pool/nodes/enabled          {"canonical": "...", "enabled": fa
 POST   /api/proxy-pool/preflight?node_id=<node-id>
 ```
 
-节点增删改接口会写 JSON 清单并立即更新调度,返回最新快照；`proxy_mode` 不是 `pool` 时，添加节点会自动切换为 `pool` 并在 `notice` 字段说明。注册任务运行期间这些接口返回 409（与其它维护操作一致）。接口的节点标识可以是原始 URI、canonical 或 node_id（WebUI 表格发的是 canonical；高级协议节点的 canonical 形如 `vless://<sha256>`，不是可解析的 URI）。
+节点增删改接口会写 JSON 清单并立即更新调度,返回最新快照；`proxy_mode` 不是 `pool` 时，添加节点会自动切换为 `pool` 并在 `notice` 字段说明。「重新加载 / 测试节点」是显式的代理池操作：配置了订阅或代理池文件但模式不是 `pool` 时会同样自动切换（`notice` 说明），未配置任何来源则返回 400 而不是静默返回空池。注册任务运行期间这些接口返回 409（与其它维护操作一致）。接口的节点标识可以是原始 URI、canonical 或 node_id（WebUI 表格发的是 canonical；高级协议节点的 canonical 形如 `vless://<sha256>`，不是可解析的 URI）。
 
 项目当前本地使用模式下，WebUI、状态 API 和相关日志继续显示完整代理地址，包括认证信息。
 
