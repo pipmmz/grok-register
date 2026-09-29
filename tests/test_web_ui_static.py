@@ -15,7 +15,12 @@ class WebUIStaticTests(unittest.TestCase):
         cls.form_sources = cls.html + "\n" + cls.proxy_js
 
     def test_all_config_keys_are_exposed_by_web_form(self):
-        missing = [key for key in DEFAULT_CONFIG if ("'" + key + "'") not in self.form_sources]
+        # 旧节点清单键已废弃(仅在节点清单 JSON 首次创建时导入),不再需要表单字段。
+        deprecated = {"proxy_pool_manual_entries", "proxy_pool_disabled_nodes"}
+        missing = [
+            key for key in DEFAULT_CONFIG
+            if key not in deprecated and ("'" + key + "'") not in self.form_sources
+        ]
         self.assertEqual(missing, [], "WebUI missing config fields: %s" % missing)
 
     def test_zh_en_switch_and_persistence_exist(self):

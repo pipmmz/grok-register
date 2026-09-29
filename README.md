@@ -255,8 +255,9 @@ CLI 读取 `config.json`，通过校验后提示：
 | `user_agent` | Chromium 和请求使用的 User-Agent |
 | `proxy_mode` | `auto` / `direct` / `single` / `pool` |
 | `proxy` | 单代理地址；`auto` 模式下留空即直连 |
-| `proxy_pool_manual_entries` | 手动添加的代理节点（与文件/订阅并列），WebUI 可直接添加 |
-| `proxy_pool_disabled_nodes` | 按规范化 URI 屏蔽的节点，WebUI「移除 / 恢复」维护 |
+| `proxy_pool_store_file` | 代理池节点清单 JSON（默认 `./proxy_pool.json`），WebUI 添加/移除的节点与启用状态都存在这里，改动立即生效 |
+| `proxy_pool_manual_entries` | 已废弃：仅在节点清单 JSON 首次创建时导入一次 |
+| `proxy_pool_disabled_nodes` | 已废弃：仅在节点清单 JSON 首次创建时导入为禁用覆盖 |
 | `multi_thread_enabled` | 是否启用并发注册，默认 `false` |
 | `multi_thread_workers` | 并发 worker 数，范围 `1–8` |
 
@@ -408,6 +409,7 @@ Cloud Mail 的 Public Token 直接放在 `Authorization` 请求头中，不需�
   "proxy_fallback": "none",
   "proxy_pool_file": "./proxies.txt",
   "proxy_pool_subscription_url": "",
+  "proxy_pool_store_file": "./proxy_pool.json",
   "proxy_pool_endpoint_mode": "auto",
   "proxy_pool_max_concurrent_per_node": 1,
   "proxy_protocol_backend": "auto",
@@ -417,6 +419,8 @@ Cloud Mail 的 Public Token 直接放在 `Authorization` 请求头中，不需�
   "proxy_runtime_cache_max": 32
 }
 ```
+
+单个节点的增删不用改 `config.json`：WebUI 代理池页的「添加代理」把节点写进 `proxy_pool_store_file`（默认 `./proxy_pool.json`）并立即参与调度，每行的「移除 / 恢复」改的是同一个 JSON 里的启用状态；`proxy_mode` 不是 `pool` 时会自动切换并提示。节点清单文件可手工编辑，`proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` 已废弃（仅在该 JSON 首次创建时导入一次）。
 
 代理源支持普通文本或整份 Base64 编码，解码后可以混合：
 

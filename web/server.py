@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -338,6 +338,89 @@ def proxy_pool_test():
         _end_maintenance(kind)
     _append_log("[*] 代理池测试完成: %s 个节点" % len(results))
     return {"ok": True, "results": results, **manager.snapshot()}
+
+
+@app.post("/api/proxy-pool/nodes")
+def proxy_pool_add_node(payload: dict = Body(...)):
+    """把单个代理写入 JSON 节点清单,并立即参与代理池调度。"""
+    from proxy_pool import get_manager
+    uri = str((payload or {}).get("uri") or "").strip()
+    if not uri:
+        raise HTTPException(status_code=400, detail="缺少代理地址 uri")
+    kind = "proxy_node_add"
+    _begin_maintenance(kind)
+    try:
+        engine.load_config()
+        notice = ""
+        try:
+            cfg = engine.validate_config_structure(dict(engine.config))
+            if cfg.get("proxy_mode") != "pool":
+                cfg["proxy_mode"] = "pool"
+                engine.config.clear()
+                engine.config.update(cfg)
+                engine.save_config()
+                notice = "代理模式已切换为 pool"
+                _append_log("[*] 代理模式已切换为 pool,新节点将参与注册")
+            manager = get_manager(config=cfg, log=_append_log)
+            result = manager.add_node(uri)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _end_maintenance(kind)
+    _append_log("[*] 代理池节点已添加: %s" % result["node"]["canonical"])
+    return {"ok": True, "notice": notice, "added": result["node"], **manager.snapshot()}
+
+
+@app.post("/api/proxy-pool/nodes/enabled")
+def proxy_pool_set_node_enabled(payload: dict = Body(...)):
+    """启用/禁用单个节点(文件/订阅节点同样支持)。"""
+    from proxy_pool import get_manager
+    canonical = str((payload or {}).get("canonical") or "").strip()
+    if not canonical:
+        raise HTTPException(status_code=400, detail="缺少节点标识 canonical")
+    enabled = bool((payload or {}).get("enabled", True))
+    kind = "proxy_node_enabled"
+    _begin_maintenance(kind)
+    try:
+        engine.load_config()
+        try:
+            cfg = engine.validate_config_structure(dict(engine.config))
+            if cfg.get("proxy_mode") != "pool":
+                raise HTTPException(status_code=409, detail="当前代理模式是 %s,只有 pool 模式使用代理池节点" % cfg.get("proxy_mode"))
+            manager = get_manager(config=cfg, log=_append_log)
+            manager.set_node_enabled(canonical, enabled)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _end_maintenance(kind)
+    _append_log("[*] 代理池节点已%s: %s" % ("启用" if enabled else "禁用", canonical))
+    return {"ok": True, **manager.snapshot()}
+
+
+@app.delete("/api/proxy-pool/nodes")
+def proxy_pool_remove_node(canonical: str = Query(..., min_length=1)):
+    """移除节点:用户添加的从清单删除,文件/订阅节点写禁用覆盖。"""
+    from proxy_pool import get_manager
+    kind = "proxy_node_remove"
+    _begin_maintenance(kind)
+    try:
+        engine.load_config()
+        try:
+            cfg = engine.validate_config_structure(dict(engine.config))
+            if cfg.get("proxy_mode") != "pool":
+                raise HTTPException(status_code=409, detail="当前代理模式是 %s,只有 pool 模式使用代理池节点" % cfg.get("proxy_mode"))
+            manager = get_manager(config=cfg, log=_append_log)
+            manager.remove_node(canonical)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        _end_maintenance(kind)
+    _append_log("[*] 代理池节点已移除: %s" % canonical)
+    return {"ok": True, **manager.snapshot()}
 
 
 @app.post("/api/proxy-pool/preflight")

@@ -41,8 +41,10 @@ DEFAULT_CONFIG = {
     "proxy_runtime_cache_max": 32,
     "proxy_pool_persist_health": False,
     "proxy_pool_state_file": "./proxy_pool_state.json",
+    "proxy_pool_store_file": "./proxy_pool.json",
     "proxy_pool_subscription_public_only": False,
     "proxy_pool_preflight_enabled": True,
+    # 旧节点清单键:仅在 proxy_pool_store_file 首次创建时导入,之后由代理池 JSON 接管。
     "proxy_pool_manual_entries": [],
     "proxy_pool_disabled_nodes": [],
     "enable_nsfw": True,
@@ -174,7 +176,7 @@ def validate_config_structure(raw):
     string_keys = tuple(key for key, value in DEFAULT_CONFIG.items() if isinstance(value, str))
     path_keys = {
         "grok2api_local_token_file", "api_reverse_tools", "cpa_auth_dir", "cpa_hotload_dir",
-        "proxy_pool_file", "proxy_singbox_path", "proxy_pool_state_file",
+        "proxy_pool_file", "proxy_singbox_path", "proxy_pool_state_file", "proxy_pool_store_file",
         "sso_risk_rejected_file", "outlook_accounts_file",
     }
     for key in string_keys:
@@ -254,10 +256,8 @@ def validate_run_requirements(cfg):
 
     if cfg["proxy_mode"] == "single" and not cfg["proxy"]:
         raise ConfigError("single 代理模式必须配置 proxy")
-    if cfg["proxy_mode"] == "pool" and not (
-        cfg["proxy_pool_file"] or cfg["proxy_pool_subscription_url"] or cfg["proxy_pool_manual_entries"]
-    ):
-        raise ConfigError("pool 代理模式至少需要 proxy_pool_file、proxy_pool_subscription_url 或 proxy_pool_manual_entries")
+    # pool 模式的节点来源包含 JSON 节点清单(proxy_pool_store_file),是否真有可用节点
+    # 由 ProxyPoolManager 装配时判断并抛出明确错误,这里不再做静态校验。
     if cfg["proxy_fallback"] == "single" and not cfg["proxy"]:
         raise ConfigError("proxy_fallback=single 时必须配置 proxy")
     if cfg["proxy_pool_persist_health"] and not cfg["proxy_pool_state_file"]:

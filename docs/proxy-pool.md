@@ -54,8 +54,7 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
   "proxy_pool_subscription_proxy": "",
   "proxy_pool_subscription_public_only": false,
 
-  "proxy_pool_manual_entries": [],
-  "proxy_pool_disabled_nodes": [],
+  "proxy_pool_store_file": "./proxy_pool.json",
 
   "proxy_pool_endpoint_mode": "auto",
   "proxy_pool_refresh_interval_sec": 900,
@@ -86,21 +85,40 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
 | `auto` | 默认兼容模式，继续使用历史 `proxy` 行为。 |
 | `direct` | 强制主注册流程直连。 |
 | `single` | 将 `proxy` 作为受 Lease 和健康管理的单节点。 |
-| `pool` | 从文件和/或订阅加载并调度多个节点。 |
+| `pool` | 从文件、订阅和 JSON 节点清单加载并调度多个节点。 |
 
-### 单独增删代理节点
+### 节点清单（JSON）
+
+节点清单是一个独立的 JSON 文件，WebUI 添加/移除的节点和启用状态都存在这里：
 
 ```json
 {
-  "proxy_pool_manual_entries": ["http://user:pass@127.0.0.1:7890", "socks5://127.0.0.1:1080"],
-  "proxy_pool_disabled_nodes": ["http://127.0.0.1:8002"]
+  "version": 1,
+  "updated_at": 1759...,
+  "nodes": {
+    "http://user:pass@127.0.0.1:7890": {
+      "uri": "http://user:pass@127.0.0.1:7890",
+      "canonical": "http://user:pass@127.0.0.1:7890",
+      "node_id": "9f2c...",
+      "enabled": true,
+      "origin": "user",
+      "added_at": 1759...
+    }
+  }
 }
 ```
 
-- `proxy_pool_manual_entries`：手动添加的节点，与文件源、订阅源并列参与解析和调度（支持同样的一整套协议）；WebUI 代理节点状态里的输入框 + 「添加代理」会写入这个键。
-- `proxy_pool_disabled_nodes`：按规范化 URI（`canonical_uri`）屏蔽节点。它不删除来源条目，所以文件/订阅刷新后依然保持屏蔽，点「恢复」即可还原；WebUI 每行的「移除」写入这个键。
-- 屏蔽全部节点时池会报 `代理池节点均已被移除`，不会静默降级为直连。
-- 两个键都是字符串数组，单项最长 4096 字符、最多 10000 项；`pool` 模式下三者（文件 / 订阅 / 手动）至少配置一个。
+```text
+proxy_pool_store_file = ./proxy_pool.json
+```
+
+- 身份按规范化 URI（`canonical_uri`）判定：`HTTP://127.0.0.1:8001` 与 `http://127.0.0.1:8001` 是同一个节点，重复添加只会重新启用它。
+- `origin=user` 是用户添加的节点（移除即从文件删除）；`origin=source` 是对文件/订阅节点的启用状态覆盖（`enabled=false` 表示屏蔽；恢复为启用时该条覆盖记录会被删除）。
+- 添加/移除/启用都**立即生效**：不需要重新加载来源，也不需要重建 Manager，正在运行的调度会在下一次租约获取时看到新节点。文件被手工编辑（或另一个进程改动）后，下一次读取会自动重新载入。
+- 写文件使用「临时文件 + fsync + 原子替换」，权限 0600；只读场景不会创建文件。
+- 文件不存在时，`proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` 会在内存中导入一次（前者为启用节点，后者为屏蔽覆盖），并在第一次增删改时落盘；之后以 JSON 清单为准，这两个旧键不再生效（保留在配置里仅为兼容旧文件）。
+- 屏蔽全部节点不会静默降级为直连：`snapshot().error` 会给出 `代理池没有可用节点` / `代理池节点均已被禁用`，`acquire()` 立即抛出该错误；空池仍然可以继续添加节点。
+- WebUI 的「添加代理」在 `proxy_mode` 不是 `pool` 时会自动切换为 `pool` 并提示；代理池只在 `single` / `pool` 模式下参与调度。
 
 ### `proxy_fallback`
 
@@ -431,9 +449,16 @@ proxy_pool_preflight_enabled = false
 
 关闭该入口。
 
-## 健康状态持久化（可选）
+## 持久化：节点清单与健康状态
 
-默认：
+代理池有两个 JSON 文件，职责分开：
+
+| 文件 | 内容 | 谁写 |
+| --- | --- | --- |
+| `proxy_pool_store_file`（默认 `./proxy_pool.json`） | 用户添加的节点、对文件/订阅节点的启用状态覆盖 | 用户/WebUI（可手工编辑） |
+| `proxy_pool_state_file`（默认 `./proxy_pool_state.json`） | 节点业务健康计数、Failure/Cooldown、最近业务错误 | 池子自动写入 |
+
+节点清单见上文「节点清单（JSON）」。健康状态默认关闭：
 
 ```text
 proxy_pool_persist_health = false
@@ -445,7 +470,7 @@ proxy_pool_persist_health = false
 proxy_pool_state_file = ./proxy_pool_state.json
 ```
 
-重建 Manager 后，相同 stable node ID 会恢复 Health、业务计数、Failure/Cooldown 和最近业务错误等状态。该文件默认加入 `.gitignore`。
+重建 Manager 后，相同 stable node ID 会恢复 Health、业务计数、Failure/Cooldown 和最近业务错误等状态。两个文件默认都加入 `.gitignore`；Docker 部署时 entrypoint 会把它们链接到 `/data` 数据卷。
 
 ## WebUI
 
@@ -463,11 +488,16 @@ proxy_pool_state_file = ./proxy_pool_state.json
 Web API：
 
 ```text
-GET  /api/proxy-pool/status
-POST /api/proxy-pool/reload
-POST /api/proxy-pool/test
-POST /api/proxy-pool/preflight?node_id=<node-id>
+GET    /api/proxy-pool/status
+POST   /api/proxy-pool/reload
+POST   /api/proxy-pool/test
+POST   /api/proxy-pool/nodes                  {"uri": "http://user:pass@127.0.0.1:7890"}
+DELETE /api/proxy-pool/nodes?canonical=<canonical-uri>
+POST   /api/proxy-pool/nodes/enabled          {"canonical": "...", "enabled": false}
+POST   /api/proxy-pool/preflight?node_id=<node-id>
 ```
+
+节点增删改接口会写 JSON 清单并立即更新调度，返回最新快照；`proxy_mode` 不是 `pool` 时，添加节点会自动切换为 `pool` 并在 `notice` 字段说明。注册任务运行期间这些接口返回 409（与其它维护操作一致）。
 
 项目当前本地使用模式下，WebUI、状态 API 和相关日志继续显示完整代理地址，包括认证信息。
 

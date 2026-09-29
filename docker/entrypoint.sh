@@ -24,6 +24,12 @@ fi
 if [ ! -e /app/screenshots ]; then
   ln -sfn /data/screenshots /app/screenshots
 fi
+# 代理池 JSON(节点清单 + 健康状态)也留在数据卷上。
+for pool_file in proxy_pool.json proxy_pool_state.json; do
+  if [ ! -e "/app/$pool_file" ]; then
+    ln -sfn "/data/$pool_file" "/app/$pool_file"
+  fi
+done
 
 # Persist account files under /data when running in container.
 export GROK_REGISTER_DATA_DIR="${GROK_REGISTER_DATA_DIR:-/data}"

@@ -11,6 +11,7 @@ import registration_flow
 from app_config import DEFAULT_CONFIG
 from proxy_bridge import LocalProxyBridge
 from proxy_pool import ProxyPoolError, ProxyPoolManager, ProxyTransportError
+from proxy_pool_store import ProxyPoolStore
 from proxy_protocol_runtime import ProtocolRuntimeManager, RuntimeEntry
 from proxy_protocols import ProxyProtocolError, parse_proxy_line
 from registration_flow import (
@@ -103,10 +104,20 @@ class ProxyPoolV3Tests(unittest.TestCase):
             restored.shutdown()
 
     def test_subscription_public_only_rejects_loopback(self):
-        cfg = self.cfg(proxy_mode="pool", proxy_pool_subscription_url="http://local.test/list", proxy_pool_subscription_public_only=True)
+        cfg = self.cfg(
+            proxy_mode="pool", proxy_pool_subscription_url="http://local.test/list",
+            proxy_pool_subscription_public_only=True,
+            proxy_pool_store_file=os.path.join(tempfile.gettempdir(), "missing-pool-store.json"),
+        )
         with patch.object(socket, "getaddrinfo", return_value=[(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80))]):
-            with self.assertRaises(ProxyPoolError):
-                ProxyPoolManager(cfg)
+            manager = ProxyPoolManager(cfg)
+            try:
+                self.assertIn("public-only", manager.snapshot()["error"])
+                self.assertIn("public-only", manager.snapshot()["sources"]["subscription"]["error"])
+                with self.assertRaises(ProxyPoolError):
+                    manager.acquire("a", "w", 1, 1, "s", timeout=1)
+            finally:
+                manager.shutdown()
 
     def test_registration_path_preflight_is_non_destructive(self):
         manager = ProxyPoolManager(self.cfg(proxy_mode="single", proxy="http://127.0.0.1:8001", proxy_pool_probe_interval_sec=0))
@@ -179,49 +190,96 @@ class ProxyPoolV3Tests(unittest.TestCase):
             finally:
                 restored.shutdown()
 
-    def test_manual_entries_are_pooled_and_disabled_nodes_are_excluded(self):
-        cfg = self.cfg(
-            proxy_mode="pool",
-            proxy_pool_manual_entries=["http://127.0.0.1:8001", "socks5://127.0.0.1:1080"],
-            proxy_pool_probe_interval_sec=0,
-            proxy_pool_endpoint_mode="fixed",
-        )
-        manager = ProxyPoolManager(cfg)
-        try:
-            nodes = manager.snapshot()["nodes"]
-            self.assertEqual(sorted(node["source"] for node in nodes), ["manual", "manual"])
-            self.assertEqual(
-                sorted(node["canonical"] for node in nodes),
-                ["http://127.0.0.1:8001", "socks5://127.0.0.1:1080"],
+    def test_store_nodes_are_pooled_immediately_and_survive_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_file = os.path.join(tmp, "proxy_pool.json")
+            cfg = self.cfg(
+                proxy_mode="pool", proxy_pool_store_file=store_file,
+                proxy_pool_probe_interval_sec=0, proxy_pool_endpoint_mode="fixed",
             )
+            seed = ProxyPoolStore(store_file)
+            seed.load()
+            seed.add("http://127.0.0.1:8001")
+            manager = ProxyPoolManager(cfg)
+            try:
+                # 构造 manager 时就要从 JSON 清单装载节点(重启后的正常路径)
+                self.assertEqual([node["canonical"] for node in manager.snapshot()["nodes"]], ["http://127.0.0.1:8001"])
+                added = manager.add_node("http://127.0.0.1:8001")
+                self.assertEqual(added["node"]["source"], "manual")
+                self.assertEqual(added["node"]["origin"], "user")
+                self.assertTrue(os.path.isfile(store_file))
 
-            manager.config["proxy_pool_disabled_nodes"] = ["http://127.0.0.1:8001"]
-            manager.reload_sources(force=True)
-            remaining = manager.snapshot()["nodes"]
-            self.assertEqual([node["canonical"] for node in remaining], ["socks5://127.0.0.1:1080"])
+                # 添加即入池:不需要 reload,也不需要重建 manager
+                lease = manager.acquire("a", "w", 1, 1, "s", timeout=1)
+                self.assertEqual(lease.node_id, added["node"]["id"])
+                manager.release(lease)
 
-            manager.config["proxy_pool_disabled_nodes"] = []
-            manager.reload_sources(force=True)
-            self.assertEqual(len(manager.snapshot()["nodes"]), 2)
+                # 不同写法解析为同一个节点,不会重复入池
+                manager.add_node("HTTP://127.0.0.1:8001")
+                self.assertEqual(len(manager.snapshot()["nodes"]), 1)
 
-            manager.config["proxy_pool_manual_entries"] = ["http://127.0.0.1:8001"]
-            manager.reload_sources(force=True)
-            self.assertEqual(
-                [node["canonical"] for node in manager.snapshot()["nodes"]],
-                ["http://127.0.0.1:8001"],
+                # 禁用后立即不参与调度,但保留在清单里可恢复
+                manager.set_node_enabled("http://127.0.0.1:8001", False)
+                snapshot = manager.snapshot()
+                self.assertFalse(snapshot["nodes"][0]["enabled"])
+                self.assertEqual(snapshot["store"]["disabled"], 1)
+                manager.set_node_enabled("http://127.0.0.1:8001", True)
+                self.assertTrue(manager.snapshot()["nodes"][0]["enabled"])
+
+                # 用户添加的节点:移除即从清单删除
+                manager.remove_node("http://127.0.0.1:8001")
+                self.assertEqual(manager.snapshot()["nodes"], [])
+
+                # 文件源节点:移除写禁用覆盖,恢复后重新可用
+                pool_file = os.path.join(tmp, "proxies.txt")
+                Path(pool_file).write_text("http://127.0.0.1:8002\n", encoding="utf-8")
+                manager.config["proxy_pool_file"] = pool_file
+                manager.reload_sources(force=True)
+                self.assertEqual([node["canonical"] for node in manager.snapshot()["nodes"]], ["http://127.0.0.1:8002"])
+                manager.remove_node("http://127.0.0.1:8002")
+                disabled = manager.snapshot()["nodes"]
+                self.assertEqual([node["canonical"] for node in disabled], ["http://127.0.0.1:8002"])
+                self.assertFalse(disabled[0]["enabled"])
+                manager.set_node_enabled("http://127.0.0.1:8002", True)
+                self.assertEqual([node["canonical"] for node in manager.snapshot()["nodes"]], ["http://127.0.0.1:8002"])
+                self.assertTrue(manager.snapshot()["nodes"][0]["enabled"])
+            finally:
+                manager.shutdown()
+
+            restored = ProxyPoolManager(dict(cfg, proxy_pool_file=os.path.join(tmp, "proxies.txt")))
+            try:
+                nodes = restored.snapshot()["nodes"]
+                self.assertEqual([node["canonical"] for node in nodes], ["http://127.0.0.1:8002"])
+                self.assertTrue(nodes[0]["enabled"])
+            finally:
+                restored.shutdown()
+
+    def test_disabling_every_node_surfaces_an_error_and_still_allows_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(
+                proxy_mode="pool",
+                proxy_pool_store_file=os.path.join(tmp, "proxy_pool.json"),
+                proxy_pool_manual_entries=["http://127.0.0.1:8001"],
+                proxy_pool_disabled_nodes=["http://127.0.0.1:8001"],
+                proxy_pool_probe_interval_sec=0,
             )
-        finally:
-            manager.shutdown()
+            manager = ProxyPoolManager(cfg)
+            try:
+                snapshot = manager.snapshot()
+                self.assertEqual(snapshot["nodes"], [])
+                self.assertIn("代理池", snapshot["error"])
+                with self.assertRaises(ProxyPoolError):
+                    manager.acquire("a", "w", 1, 1, "s", timeout=1)
 
-    def test_disabling_every_node_reports_pool_error(self):
-        cfg = self.cfg(
-            proxy_mode="pool",
-            proxy_pool_manual_entries=["http://127.0.0.1:8001"],
-            proxy_pool_disabled_nodes=["http://127.0.0.1:8001"],
-            proxy_pool_probe_interval_sec=0,
-        )
-        with self.assertRaises(ProxyPoolError):
-            ProxyPoolManager(cfg)
+                # 空池 / 全部禁用不再是死局:添加节点后立即恢复可用
+                manager.add_node("http://127.0.0.1:8002")
+                self.assertEqual(manager.snapshot()["error"], "")
+                self.assertEqual([node["canonical"] for node in manager.snapshot()["nodes"]], ["http://127.0.0.1:8002"])
+                lease = manager.acquire("a", "w", 1, 1, "s", timeout=1)
+                self.assertEqual(lease.source_uri, "http://127.0.0.1:8002")
+                manager.release(lease)
+            finally:
+                manager.shutdown()
 
     def test_config_validation_accepts_proxy_lists_and_rejects_bad_shapes(self):
         from app_config import ConfigError, validate_config_structure
@@ -249,13 +307,19 @@ class ProxyPoolV3Tests(unittest.TestCase):
             "yyds_api_key": "k",
         })
         self.assertEqual(manual_only["proxy_mode"], "pool")
-        with self.assertRaises(ConfigError):
-            validate_run_requirements({
-                **dict(DEFAULT_CONFIG),
-                "proxy_mode": "pool",
-                "email_provider": "yyds",
-                "yyds_api_key": "k",
-            })
+        # 节点清单 JSON 同样是合法来源:静态校验不再要求 file/subscription/manual。
+        store_only = validate_run_requirements({
+            **dict(DEFAULT_CONFIG),
+            "proxy_mode": "pool",
+            "email_provider": "yyds",
+            "yyds_api_key": "k",
+        })
+        self.assertEqual(store_only["proxy_mode"], "pool")
+        self.assertEqual(store_only["proxy_pool_store_file"], "./proxy_pool.json")
+        self.assertEqual(
+            validate_config_structure({**dict(DEFAULT_CONFIG), "proxy_pool_store_file": "  ./pool.json  "})["proxy_pool_store_file"],
+            "./pool.json",
+        )
 
     def _ops(self, failure_stage=None, state=None):
         state = state or {"profile_calls": 0, "page_calls": 0}

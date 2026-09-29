@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 from app_config import DEFAULT_CONFIG, validate_config_structure, validate_run_requirements
 from proxy_pool import (
-    ProxyAcquireCancelled, ProxyPoolManager, classify_proxy_network_error,
+    ProxyAcquireCancelled, ProxyPoolError, ProxyPoolManager, classify_proxy_network_error,
     parse_proxy_source, safe_proxy_error_text,
 )
 
@@ -24,10 +24,18 @@ class ProxyPoolTests(unittest.TestCase):
         self.assertEqual(cfg["proxy_fallback"], "none")
         self.assertFalse(ProxyPoolManager(cfg).managed)
 
-    def test_run_validation_requires_pool_source(self):
-        cfg = self._config(proxy_mode="pool")
-        with self.assertRaises(Exception):
-            validate_run_requirements(cfg)
+    def test_pool_mode_without_any_source_fails_when_the_pool_is_assembled(self):
+        """节点清单(JSON)也是合法来源,静态校验不再拦截,装配错误在使用时抛出。"""
+        cfg = self._config(
+            proxy_mode="pool",
+            proxy_pool_store_file=str(Path(tempfile.gettempdir()) / "missing-pool-store.json"),
+        )
+        validate_run_requirements(cfg)
+        manager = ProxyPoolManager(cfg)
+        self.assertEqual(manager.snapshot()["nodes"], [])
+        self.assertIn("代理池", manager.snapshot()["error"])
+        with self.assertRaises(ProxyPoolError):
+            manager.acquire("a", "w", 1, 1, "s", timeout=1)
 
     def test_plain_and_base64_proxy_sources_are_parsed_and_deduplicated(self):
         text = "# comment\nhttp://127.0.0.1:8080\nhttp://127.0.0.1:8080\nsocks5://user:pass@127.0.0.2:1080\n"

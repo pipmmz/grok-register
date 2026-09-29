@@ -255,8 +255,9 @@ The project performs structural validation at startup and checks fields required
 | `user_agent` | User-Agent used by Chromium and HTTP requests |
 | `proxy_mode` | `auto` / `direct` / `single` / `pool` |
 | `proxy` | Single proxy address; in `auto` mode, leave empty for a direct connection |
-| `proxy_pool_manual_entries` | Manually added proxy nodes (next to file/subscription sources); the WebUI can add them |
-| `proxy_pool_disabled_nodes` | Nodes blocked by canonical URI, managed by the WebUI Remove / Restore buttons |
+| `proxy_pool_store_file` | Proxy-pool node-list JSON (default `./proxy_pool.json`); nodes added/removed in the WebUI and their enabled flags live here and apply immediately |
+| `proxy_pool_manual_entries` | Deprecated: imported once when the node-list JSON is first created |
+| `proxy_pool_disabled_nodes` | Deprecated: imported once as block overrides when the node-list JSON is first created |
 | `multi_thread_enabled` | Whether concurrent registration is enabled; default `false` |
 | `multi_thread_workers` | Number of concurrent workers, range `1–8` |
 
@@ -408,6 +409,7 @@ Native proxy:
   "proxy_fallback": "none",
   "proxy_pool_file": "./proxies.txt",
   "proxy_pool_subscription_url": "",
+  "proxy_pool_store_file": "./proxy_pool.json",
   "proxy_pool_endpoint_mode": "auto",
   "proxy_pool_max_concurrent_per_node": 1,
   "proxy_protocol_backend": "auto",
@@ -417,6 +419,8 @@ Native proxy:
   "proxy_runtime_cache_max": 32
 }
 ```
+
+Adding or removing a single node no longer means editing `config.json`: "Add proxy" on the WebUI proxy-pool page writes the node into `proxy_pool_store_file` (default `./proxy_pool.json`) and it joins scheduling immediately, while the per-row Remove / Restore buttons flip the enabled flag in that same JSON; when `proxy_mode` is not `pool` the mode is switched automatically and reported. The node-list file can be edited by hand; `proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` are deprecated (imported once when that JSON is first created).
 
 Proxy sources can be plain text or an entire Base64-encoded document. After decoding, they may contain mixed protocols:
 

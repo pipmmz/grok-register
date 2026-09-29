@@ -19,6 +19,7 @@ mail_credentials.txt
 *.pending.jsonl
 *.pending.jsonl.lock
 proxy_pool_state.json
+proxy_pool.json
 cpa_auths
 screenshots
 DrissionPage

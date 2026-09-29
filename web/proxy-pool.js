@@ -23,6 +23,7 @@
     ['proxy_runtime_cache_max','number',{min:1,max:256}],
     ['proxy_pool_persist_health','checkbox'],
     ['proxy_pool_state_file','text','full'],
+    ['proxy_pool_store_file','text','full'],
     ['proxy_pool_subscription_public_only','checkbox'],
     ['proxy_pool_preflight_enabled','checkbox'],
   ];
@@ -37,7 +38,9 @@
     proxyIPv4:'IPv4', proxyIPv6:'IPv6', proxyGatewayRate:'出口成功率', proxySamples:'样本', proxySuccessAttempts:'成功/尝试',
     proxyActions:'操作', proxyRemove:'移除', proxyAdd:'添加代理', proxyRemoved:'已移除:', proxyRestoreAll:'全部恢复',
     proxyRestore:'恢复', proxyManualPlaceholder:'http://user:pass@host:port 或 vless://… 支持任意受支持协议',
-    proxyNoneRemoved:'无', proxyAddEmpty:'请先填写代理地址', proxyAddDuplicate:'该代理已在池中',
+    proxyNoneRemoved:'无', proxyAddEmpty:'请先填写代理地址', proxyAdded:'已加入代理池',
+    proxyDisabled:'已禁用（可从左侧恢复）', proxyAddFailed:'添加失败', proxyEnableAll:'正在恢复节点…',
+    proxyStoreHint:'节点清单文件',
   };
   const en = {
     tabProxy:'Proxy pool', proxyReload:'Reload', proxyTest:'Test nodes', proxyStatus:'Proxy node status',
@@ -49,7 +52,9 @@
     proxyIPv4:'IPv4', proxyIPv6:'IPv6', proxyGatewayRate:'Exit success', proxySamples:'Samples', proxySuccessAttempts:'OK / attempts',
     proxyActions:'Actions', proxyRemove:'Remove', proxyAdd:'Add proxy', proxyRemoved:'Removed:', proxyRestoreAll:'Restore all',
     proxyRestore:'Restore', proxyManualPlaceholder:'http://user:pass@host:port or vless://… any supported protocol',
-    proxyNoneRemoved:'none', proxyAddEmpty:'Enter a proxy address first', proxyAddDuplicate:'That proxy is already in the pool',
+    proxyNoneRemoved:'none', proxyAddEmpty:'Enter a proxy address first', proxyAdded:'Added to the proxy pool',
+    proxyDisabled:'Disabled (restore it from the left)', proxyAddFailed:'Add failed', proxyEnableAll:'Restoring nodes…',
+    proxyStoreHint:'Node list file',
   };
   Object.assign(i18n.zh, zh); Object.assign(i18n.en, en);
   Object.assign(i18n.zh.fields, {
@@ -74,6 +79,7 @@
     proxy_runtime_cache_max:['运行时缓存上限','空闲运行时超过上限时优先清理最久未使用项。'],
     proxy_pool_persist_health:['持久化代理健康','把固定节点的业务健康统计保存到本地 JSON。'],
     proxy_pool_state_file:['健康状态文件','仅在启用健康持久化时使用。'],
+    proxy_pool_store_file:['代理池节点清单','节点清单 JSON：WebUI 添加/移除的节点与启用状态都写在这里，改动立即生效，可直接手工编辑。'],
     proxy_pool_subscription_public_only:['订阅仅允许公网','启用后拒绝解析到私网/回环/保留地址的订阅 URL 和重定向。'],
     proxy_pool_preflight_enabled:['注册路径预检','保留非破坏性的 accounts.x.ai / grok.com 可达性预检能力。'],
   });
@@ -99,6 +105,7 @@
     proxy_runtime_cache_max:['Runtime cache limit','Evict oldest idle runtimes after this limit.'],
     proxy_pool_persist_health:['Persist proxy health','Persist fixed-node business health to local JSON.'],
     proxy_pool_state_file:['Health state file','Used only when health persistence is enabled.'],
+    proxy_pool_store_file:['Pool node list','Node-list JSON: nodes added/removed in the WebUI and their enabled flags live here; changes apply immediately and the file can be edited by hand.'],
     proxy_pool_subscription_public_only:['Public-only subscription','Reject subscription URLs/redirects resolving to private, loopback or reserved addresses.'],
     proxy_pool_preflight_enabled:['Registration preflight','Keep non-destructive accounts.x.ai / grok.com path preflight available.'],
   });
@@ -110,10 +117,14 @@
   renderFields();
   applyLanguage();
 
+  // index.html 的 renderFields() 会重建整个 #sections(代理池面板一起被抹掉),
+  // 所以挂载逻辑做成幂等函数,并在 fields-rendered 之后重新挂载。
+  function installProxySection() {
+  const proxySection = document.getElementById('sec-proxy');
+  if (proxySection && document.getElementById('proxyPoolRows')) return;
   const proxyTab = document.querySelector('[data-tabkey="tabProxy"]');
   const basicTab = document.querySelector('[data-tabkey="tabBasic"]');
   if (proxyTab && basicTab && basicTab.nextSibling !== proxyTab) basicTab.after(proxyTab);
-  const proxySection = document.getElementById('sec-proxy');
   const basicSection = document.getElementById('sec-basic');
   if (proxySection && basicSection && basicSection.nextSibling !== proxySection) basicSection.after(proxySection);
 
@@ -173,7 +184,11 @@
   }
   function renderProxyStatus(data) {
     const rows = document.getElementById('proxyPoolRows'); const summary = document.getElementById('proxyPoolSummary'); if (!rows || !summary) return;
-    const nodes = Array.isArray(data.nodes) ? data.nodes : []; summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}`; renderSourceSummary(data);
+    lastStatus = data || {};
+    const nodes = Array.isArray(data.nodes) ? data.nodes : []; const store = (data && data.store) || {};
+    const storeText = store.total ? ` · ${t('proxyStoreHint')}: ${store.total}${store.disabled ? ` · ${store.disabled} ${t('proxyDisabled')}` : ''}` : '';
+    summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}${storeText}${data.error ? ' · ' + data.error : ''}`;
+    renderSourceSummary(data); renderDisabledList(data);
     if (!nodes.length) { rows.innerHTML = `<tr><td colspan="14" class="proxy-empty">${esc(t('proxyEmpty'))}</td></tr>`; return; }
     rows.innerHTML = nodes.map(node => {
       const status = node.probe_status === 'healthy' ? 'good' : (node.probe_status === 'unhealthy' || node.probe_status === 'unavailable') ? 'bad' : '';
@@ -193,60 +208,72 @@
         <td>${esc(health)}</td><td>${esc(successAttempts)}</td><td>${esc(latency)}</td><td>${esc(node.exit_ip || '—')}</td>
         <td>${esc(node.inflight)}</td><td>${esc(failures)}</td><td>${node.rotating ? 'N/A' : (node.cooldown_sec ? esc(node.cooldown_sec)+' s' : '—')}</td>
         <td title="${esc(error)}">${esc(error)}</td>
-        <td><button type="button" class="mini-btn proxy-remove" data-canonical="${esc(node.canonical || node.proxy)}">${esc(t('proxyRemove'))}</button></td>
+        <td>${node.enabled === false
+          ? `<button type="button" class="mini-btn proxy-restore" data-canonical="${esc(node.canonical || node.proxy)}">${esc(t('proxyRestore'))}</button>`
+          : `<button type="button" class="mini-btn proxy-remove" data-canonical="${esc(node.canonical || node.proxy)}">${esc(t('proxyRemove'))}</button>`}</td>
       </tr>`;
     }).join('');
   }
-  const POOL_LIST_KEYS = { manual: 'proxy_pool_manual_entries', disabled: 'proxy_pool_disabled_nodes' };
-  let poolConfig = { manual: [], disabled: [] };
+  let lastStatus = {};
   function shortUri(uri) { const text = String(uri || ''); return text.length > 42 ? text.slice(0, 39) + '…' : text; }
-  function renderDisabledList() {
+  function storeNodes(data) {
+    return data && data.store && Array.isArray(data.store.nodes) ? data.store.nodes : [];
+  }
+  function disabledEntries(data) {
+    return storeNodes(data).filter(item => item && item.enabled === false);
+  }
+  function renderDisabledList(data) {
     const target = document.getElementById('proxyDisabledList'); if (!target) return;
-    target.innerHTML = poolConfig.disabled.length
-      ? poolConfig.disabled.map(uri => `<button type="button" class="proxy-chip proxy-restore" data-canonical="${esc(uri)}" title="${esc(uri)}">${esc(shortUri(uri))} ×</button>`).join('')
+    const disabled = disabledEntries(data);
+    target.innerHTML = disabled.length
+      ? disabled.map(item => `<button type="button" class="proxy-chip proxy-restore" data-canonical="${esc(item.canonical)}" title="${esc(item.uri)}">${esc(shortUri(item.uri))} ×</button>`).join('')
       : `<span class="proxy-chip-empty">${esc(t('proxyNoneRemoved'))}</span>`;
   }
-  function readPoolLists(cfg) {
-    const value = cfg || {};
-    return {
-      manual: Array.isArray(value[POOL_LIST_KEYS.manual]) ? value[POOL_LIST_KEYS.manual].slice() : [],
-      disabled: Array.isArray(value[POOL_LIST_KEYS.disabled]) ? value[POOL_LIST_KEYS.disabled].slice() : [],
-    };
-  }
-  async function loadPoolConfig() {
-    try {
-      const r = await fetch('/api/config'); if (!r.ok) return;
-      const d = await r.json(); poolConfig = readPoolLists((d && d.config) || {}); renderDisabledList();
-    } catch (_) {}
-  }
-  async function savePoolLists(updates) {
-    const r = await fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
+  // 节点增删改都走代理池 JSON 清单接口，返回最新快照。
+  async function poolNodeRequest(path, options) {
+    const r = await fetch(path, options);
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) { setNotice(d.detail || t('saveFailed'), true); return false; }
-    poolConfig = readPoolLists(d.config || {}); renderDisabledList(); applyConfig(d.config || {}); setNotice(t('saved'));
-    await proxyAction('/api/proxy-pool/reload');
-    return true;
+    if (!r.ok) { setNotice(d.detail || t('proxyAddFailed'), true); return null; }
+    lastStatus = d; renderProxyStatus(d); return d;
   }
   async function addManualProxy() {
     const input = document.getElementById('proxyManualInput'); if (!input) return;
     const value = String(input.value || '').trim();
     if (!value) { setNotice(t('proxyAddEmpty'), true); return; }
-    if (poolConfig.manual.includes(value)) { setNotice(t('proxyAddDuplicate'), true); return; }
-    const ok = await savePoolLists({
-      [POOL_LIST_KEYS.manual]: poolConfig.manual.concat([value]),
-      [POOL_LIST_KEYS.disabled]: poolConfig.disabled.filter(item => item !== value),
-    });
-    if (ok) input.value = '';
+    const addBtn = document.getElementById('proxyAddBtn'); if (addBtn) addBtn.disabled = true;
+    try {
+      const d = await poolNodeRequest('/api/proxy-pool/nodes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ uri: value }),
+      });
+      if (!d) return;
+      input.value = '';
+      setNotice(d.notice ? `${t('proxyAdded')} · ${d.notice}` : t('proxyAdded'));
+      if (d.notice) loadConfig().catch(() => {});
+    } finally { if (addBtn) addBtn.disabled = !!running; }
   }
   async function removeNode(canonical) {
     const target = String(canonical || '').trim(); if (!target) return;
-    if (poolConfig.disabled.includes(target)) return;
-    // 只加入移除列表，不删除来源条目：文件/订阅/手动添加的节点都能用同一个“恢复”按钮还原。
-    await savePoolLists({ [POOL_LIST_KEYS.disabled]: poolConfig.disabled.concat([target]) });
+    const d = await poolNodeRequest('/api/proxy-pool/nodes?canonical=' + encodeURIComponent(target), { method: 'DELETE' });
+    if (d) setNotice(t('proxyRemoved'));
   }
   async function restoreNode(canonical) {
     const target = String(canonical || '').trim(); if (!target) return;
-    await savePoolLists({ [POOL_LIST_KEYS.disabled]: poolConfig.disabled.filter(item => item !== target) });
+    const d = await poolNodeRequest('/api/proxy-pool/nodes/enabled', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ canonical: target, enabled: true }),
+    });
+    if (d) setNotice(t('saved'));
+  }
+  async function restoreAllNodes() {
+    const pending = disabledEntries(lastStatus);
+    if (!pending.length) return;
+    setNotice(t('proxyEnableAll'));
+    for (const item of pending) {
+      const d = await poolNodeRequest('/api/proxy-pool/nodes/enabled', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ canonical: item.canonical, enabled: true }),
+      });
+      if (!d) return;
+    }
+    setNotice(t('saved'));
   }
   async function refreshProxyStatus() { try { const r = await fetch('/api/proxy-pool/status'); if (!r.ok) return; renderProxyStatus(await r.json()); } catch (_) {} }
   async function proxyAction(path) {
@@ -262,21 +289,31 @@
   const manualInput = document.getElementById('proxyManualInput');
   if (manualInput) manualInput.onkeydown = (event) => { if (event.key === 'Enter') { event.preventDefault(); addManualProxy().catch(e => setNotice(e.message, true)); } };
   const clearDisabledBtn = document.getElementById('proxyClearDisabledBtn');
-  if (clearDisabledBtn) clearDisabledBtn.onclick = () => savePoolLists({ [POOL_LIST_KEYS.disabled]: [] }).catch(e => setNotice(e.message, true));
+  if (clearDisabledBtn) clearDisabledBtn.onclick = () => restoreAllNodes().catch(e => setNotice(e.message, true));
   const poolRows = document.getElementById('proxyPoolRows');
   if (poolRows) poolRows.addEventListener('click', (event) => {
-    const btn = event.target.closest('.proxy-remove'); if (!btn) return;
-    removeNode(btn.dataset.canonical).catch(e => setNotice(e.message, true));
+    const remove = event.target.closest('.proxy-remove');
+    if (remove) { removeNode(remove.dataset.canonical).catch(e => setNotice(e.message, true)); return; }
+    const restore = event.target.closest('.proxy-restore');
+    if (restore) restoreNode(restore.dataset.canonical).catch(e => setNotice(e.message, true));
   });
   const disabledList = document.getElementById('proxyDisabledList');
   if (disabledList) disabledList.addEventListener('click', (event) => {
     const btn = event.target.closest('.proxy-restore'); if (!btn) return;
     restoreNode(btn.dataset.canonical).catch(e => setNotice(e.message, true));
   });
-  loadPoolConfig();
   const reloadBtn = document.getElementById('proxyReloadBtn'); const testBtn = document.getElementById('proxyTestBtn');
   if (reloadBtn) reloadBtn.onclick = () => proxyAction('/api/proxy-pool/reload');
   if (testBtn) testBtn.onclick = () => proxyAction('/api/proxy-pool/test');
-  loadConfig().catch(e => setNotice(e.message,true)); refreshProxyStatus();
-  setInterval(() => { if (reloadBtn) reloadBtn.disabled = !!running; if (testBtn) testBtn.disabled = !!running; refreshProxyStatus(); }, 2000);
+  refreshProxyStatus();
+  }
+
+  installProxySection();
+  document.addEventListener('fields-rendered', installProxySection);
+  loadConfig().catch(e => setNotice(e.message,true));
+  setInterval(() => {
+    const reloadBtn = document.getElementById('proxyReloadBtn'); const testBtn = document.getElementById('proxyTestBtn');
+    if (reloadBtn) reloadBtn.disabled = !!running; if (testBtn) testBtn.disabled = !!running;
+    refreshProxyStatus();
+  }, 2000);
 })();

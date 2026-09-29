@@ -54,8 +54,7 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
   "proxy_pool_subscription_proxy": "",
   "proxy_pool_subscription_public_only": false,
 
-  "proxy_pool_manual_entries": [],
-  "proxy_pool_disabled_nodes": [],
+  "proxy_pool_store_file": "./proxy_pool.json",
 
   "proxy_pool_endpoint_mode": "auto",
   "proxy_pool_refresh_interval_sec": 900,
@@ -86,21 +85,40 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
 | `auto` | Default compatibility mode; continues to use the legacy `proxy` behavior. |
 | `direct` | Forces the main registration flow to connect directly. |
 | `single` | Treats `proxy` as a single node managed by Lease and health logic. |
-| `pool` | Loads and schedules multiple nodes from a file and/or subscription. |
+| `pool` | Loads and schedules multiple nodes from a file, a subscription and the JSON node list. |
 
-### Adding and removing individual proxies
+### Node list (JSON)
+
+The node list is a standalone JSON file; nodes added or removed in the WebUI and their enabled flags live there:
 
 ```json
 {
-  "proxy_pool_manual_entries": ["http://user:pass@127.0.0.1:7890", "socks5://127.0.0.1:1080"],
-  "proxy_pool_disabled_nodes": ["http://127.0.0.1:8002"]
+  "version": 1,
+  "updated_at": 1759...,
+  "nodes": {
+    "http://user:pass@127.0.0.1:7890": {
+      "uri": "http://user:pass@127.0.0.1:7890",
+      "canonical": "http://user:pass@127.0.0.1:7890",
+      "node_id": "9f2c...",
+      "enabled": true,
+      "origin": "user",
+      "added_at": 1759...
+    }
+  }
 }
 ```
 
-- `proxy_pool_manual_entries`: manually added nodes; they are parsed and scheduled next to the file and subscription sources (same protocol support). The input plus "Add proxy" in the WebUI node status panel writes this key.
-- `proxy_pool_disabled_nodes`: blocks nodes by canonical URI (`canonical_uri`). It does not delete the source entry, so the block survives file/subscription refreshes and "Restore" brings the node back; the per-row "Remove" button writes this key.
-- Blocking every node raises `代理池节点均已被移除` instead of silently falling back to a direct connection.
-- Both keys are string arrays; each item is capped at 4096 characters and 10000 items. In `pool` mode at least one of file / subscription / manual must be configured.
+```text
+proxy_pool_store_file = ./proxy_pool.json
+```
+
+- Identity is the canonical URI: `HTTP://127.0.0.1:8001` and `http://127.0.0.1:8001` are the same node, and re-adding a node simply re-enables it.
+- `origin=user` is a node you added (removing it deletes the entry); `origin=source` is an enabled-state override for a file/subscription node (`enabled=false` blocks it, and restoring it drops the override record).
+- Add / remove / enable take effect **immediately**: no source reload and no Manager rebuild is needed, and a running scheduler sees the new node on its next lease acquisition. Hand-edited (or other-process) changes are picked up on the next read.
+- Writes are atomic (temp file + fsync + replace) with mode 0600; read-only usage never creates the file.
+- When the file does not exist, `proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` are imported once in memory (the first as enabled nodes, the second as block overrides) and persisted on the first change. After that the JSON list is authoritative and the two legacy keys no longer take effect (they stay in the config for compatibility with old files).
+- Blocking every node never silently falls back to a direct connection: `snapshot().error` reports `代理池没有可用节点` / `代理池节点均已被禁用` and `acquire()` raises it right away; an empty pool can still be extended by adding nodes.
+- When `proxy_mode` is not `pool`, "Add proxy" in the WebUI switches the mode to `pool` and says so; the pool only participates in scheduling in `single` / `pool` mode.
 
 ### `proxy_fallback`
 
@@ -429,9 +447,16 @@ Manual preflight is disabled while a task is running. It can be turned off entir
 proxy_pool_preflight_enabled = false
 ```
 
-## Health-State Persistence (Optional)
+## Persistence: Node List and Health State
 
-Default:
+The pool uses two JSON files with separate duties:
+
+| File | Content | Written by |
+| --- | --- | --- |
+| `proxy_pool_store_file` (default `./proxy_pool.json`) | Nodes you added plus enabled-state overrides for file/subscription nodes | You / the WebUI (hand-editable) |
+| `proxy_pool_state_file` (default `./proxy_pool_state.json`) | Node business-health counters, Failure/Cooldown, recent business errors | The pool, automatically |
+
+See "Node list (JSON)" above for the node list. Health persistence is off by default:
 
 ```text
 proxy_pool_persist_health = false
@@ -443,7 +468,7 @@ When enabled, node business-health state is atomically written to:
 proxy_pool_state_file = ./proxy_pool_state.json
 ```
 
-After the Manager is rebuilt, nodes with the same stable node ID restore Health, business counters, Failure/Cooldown state, and recent business errors. This file is included in `.gitignore` by default.
+After the Manager is rebuilt, nodes with the same stable node ID restore Health, business counters, Failure/Cooldown state, and recent business errors. Both files are in `.gitignore` by default, and the Docker entrypoint links them onto the `/data` volume.
 
 ## WebUI
 
@@ -461,11 +486,16 @@ The proxy-pool page displays or stores:
 Web API:
 
 ```text
-GET  /api/proxy-pool/status
-POST /api/proxy-pool/reload
-POST /api/proxy-pool/test
-POST /api/proxy-pool/preflight?node_id=<node-id>
+GET    /api/proxy-pool/status
+POST   /api/proxy-pool/reload
+POST   /api/proxy-pool/test
+POST   /api/proxy-pool/nodes                  {"uri": "http://user:pass@127.0.0.1:7890"}
+DELETE /api/proxy-pool/nodes?canonical=<canonical-uri>
+POST   /api/proxy-pool/nodes/enabled          {"canonical": "...", "enabled": false}
+POST   /api/proxy-pool/preflight?node_id=<node-id>
 ```
+
+The node endpoints write the JSON list, update scheduling immediately and return the fresh snapshot; when `proxy_mode` is not `pool`, adding a node switches the mode to `pool` and explains it in the `notice` field. While a registration task is running these endpoints return 409, like the other maintenance operations.
 
 Under the project's current local-use model, the WebUI, status API, and related logs continue to display full proxy addresses, including authentication information.
 
