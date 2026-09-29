@@ -208,7 +208,7 @@ python -m pip install -r requirements-web.txt
 python -m web.server
 ```
 
-The WebUI listens on `127.0.0.1:8092` by default and provides bilingual Chinese/English configuration, start/stop controls, batch statistics, real-time logs, proxy-pool node status, subscription parsing statistics, reload, and manual testing.
+The WebUI listens on `127.0.0.1:8092` by default and provides bilingual Chinese/English configuration, start/stop controls, batch statistics, real-time logs, proxy-pool node status, subscription parsing statistics, reload, and manual testing. Logs and task status are pushed by the server over WebSocket (`/api/logs/ws`, `/api/status/ws`); the frontend no longer polls.
 
 ### GUI
 

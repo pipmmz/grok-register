@@ -2,6 +2,7 @@
 """Local FastAPI control plane that reuses the existing registration engine."""
 from __future__ import annotations
 
+import asyncio
 import collections
 import datetime
 import threading
@@ -9,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -21,6 +22,9 @@ PROXY_POOL_JS = Path(__file__).resolve().parent / "proxy-pool.js"
 PROXY_POOL_CSS = Path(__file__).resolve().parent / "proxy-pool.css"
 OUTLOOK_MAILBOX_JS = Path(__file__).resolve().parent / "outlook-mailbox.js"
 LOG_LIMIT = 2000
+STATUS_PUSH_INTERVAL_SEC = 0.5
+STATUS_HEARTBEAT_SEC = 2.0
+LOG_PUSH_INTERVAL_SEC = 0.25
 
 app = FastAPI(title="grok-register WebUI", version="1.2")
 
@@ -446,17 +450,52 @@ def proxy_pool_preflight(node_id: str = Query(..., min_length=1)):
     return {"ok": True, "result": result, **manager.snapshot()}
 
 
-@app.get("/api/status")
-def status():
-    return {"ok": True, **_state_snapshot()}
-
-
-@app.get("/api/logs")
-def logs(after: int = Query(default=0, ge=0)):
+def _log_entries_after(after: int) -> tuple[list[dict[str, Any]], int]:
     with _log_lock:
         entries = [dict(item) for item in _logs if int(item["seq"]) > int(after)]
         latest = int(_log_seq)
-    return {"ok": True, "latest": latest, "entries": entries}
+    return entries, latest
+
+
+@app.websocket("/api/status/ws")
+async def status_stream(websocket: WebSocket):
+    """推送任务状态快照:状态变化时立即推送,最长 `STATUS_HEARTBEAT_SEC` 补一帧心跳。
+
+    服务端按 `STATUS_PUSH_INTERVAL_SEC` 比较快照,客户端只负责渲染,不再轮询。
+    """
+    await websocket.accept()
+    previous: Optional[dict[str, Any]] = None
+    last_sent = 0.0
+    try:
+        while True:
+            payload = {"ok": True, **_state_snapshot()}
+            now = time.monotonic()
+            if payload != previous or (now - last_sent) >= STATUS_HEARTBEAT_SEC:
+                await websocket.send_json(payload)
+                previous = payload
+                last_sent = now
+            await asyncio.sleep(STATUS_PUSH_INTERVAL_SEC)
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        return
+
+
+@app.websocket("/api/logs/ws")
+async def logs_stream(websocket: WebSocket, after: int = Query(default=0, ge=0)):
+    """推送日志增量:连接时补发 `after` 之后的积压,之后只推送新行。"""
+    await websocket.accept()
+    cursor = int(after)
+    first_frame = True
+    try:
+        while True:
+            entries, latest = _log_entries_after(cursor)
+            if entries or first_frame:
+                await websocket.send_json({"ok": True, "latest": latest, "entries": entries})
+                first_frame = False
+                if entries:
+                    cursor = max(cursor, int(latest))
+            await asyncio.sleep(LOG_PUSH_INTERVAL_SEC)
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        return
 
 
 @app.post("/api/start")

@@ -63,11 +63,11 @@ class WebControlPlaneTests(unittest.TestCase):
 
     def _wait_finished(self, timeout=2.0):
         deadline = time.time() + timeout
-        while time.time() < deadline:
-            state = self.client.get("/api/status").json()
-            if not state["running"]:
-                return state
-            time.sleep(0.01)
+        with self.client.websocket_connect("/api/status/ws") as websocket:
+            while time.time() < deadline:
+                state = websocket.receive_json()
+                if not state["running"]:
+                    return state
         self.fail("web job did not finish")
 
     def test_index_and_health(self):
@@ -291,16 +291,40 @@ class WebControlPlaneTests(unittest.TestCase):
             state = self._wait_finished()
         self.assertEqual(state["error"], "boom")
 
-    def test_log_cursor_and_buffer_cap(self):
+    def test_status_stream_pushes_state_changes(self):
+        with self.client.websocket_connect("/api/status/ws") as websocket:
+            first = websocket.receive_json()
+            self.assertFalse(first["running"])
+            with self.server._job_lock:
+                self.server._job_state["running"] = True
+                self.server._job_state["target"] = 3
+            pushed = websocket.receive_json()
+        self.assertTrue(pushed["running"])
+        self.assertEqual(pushed["target"], 3)
+
+    def test_log_stream_replays_backlog_and_pushes_new_lines(self):
         for index in range(self.server.LOG_LIMIT + 5):
             self.server._append_log("line-%s" % index)
-        first = self.client.get("/api/logs?after=0").json()
-        self.assertEqual(len(first["entries"]), self.server.LOG_LIMIT)
-        latest = first["latest"]
-        self.server._append_log("new-line")
-        next_page = self.client.get("/api/logs?after=%s" % latest).json()
-        self.assertEqual(len(next_page["entries"]), 1)
-        self.assertIn("new-line", next_page["entries"][0]["line"])
+        with self.client.websocket_connect("/api/logs/ws?after=0") as websocket:
+            first = websocket.receive_json()
+            self.assertEqual(len(first["entries"]), self.server.LOG_LIMIT)
+            self.assertEqual(first["latest"], self.server.LOG_LIMIT + 5)
+            self.server._append_log("new-line")
+            delta = websocket.receive_json()
+        self.assertEqual(len(delta["entries"]), 1)
+        self.assertIn("new-line", delta["entries"][0]["line"])
+        self.assertEqual(delta["latest"], self.server.LOG_LIMIT + 6)
+
+    def test_log_stream_resumes_from_cursor(self):
+        self.server._append_log("old-line")
+        with self.client.websocket_connect("/api/logs/ws?after=%s" % self.server._log_seq) as websocket:
+            frame = websocket.receive_json()
+        self.assertEqual(frame["entries"], [])
+        self.assertEqual(frame["latest"], self.server._log_seq)
+
+    def test_status_and_logs_polling_endpoints_are_replaced_by_websockets(self):
+        self.assertEqual(self.client.get("/api/status").status_code, 404)
+        self.assertEqual(self.client.get("/api/logs?after=0").status_code, 404)
 
 
 if __name__ == "__main__":

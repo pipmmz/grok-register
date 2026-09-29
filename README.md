@@ -208,7 +208,7 @@ python -m pip install -r requirements-web.txt
 python -m web.server
 ```
 
-WebUI 默认监听 `127.0.0.1:8092`，提供中英双语配置、开始/停止、批次统计、实时日志、代理池节点状态、订阅解析统计、重新加载和手动测试。
+WebUI 默认监听 `127.0.0.1:8092`，提供中英双语配置、开始/停止、批次统计、实时日志、代理池节点状态、订阅解析统计、重新加载和手动测试。日志与任务状态通过 WebSocket（`/api/logs/ws`、`/api/status/ws`）由服务端主动推送，前端不再轮询。
 
 ### GUI
 
