@@ -1033,6 +1033,11 @@ class GrokRegisterGUI:
         )
         add_field(self.cloudflare_auth_mode_combo, 4, 3, sticky=tk.W, provider=self._cf_widgets)
 
+        add_label(4, 1, "Cloudflare 域名(逗号分隔):", provider=self._cf_widgets)
+        self.default_domains_var = tk.StringVar(value=config.get("defaultDomains", ""))
+        self.default_domains_entry = tk_entry(config_frame, textvariable=self.default_domains_var, width=34)
+        add_field(self.default_domains_entry, 4, 2, provider=self._cf_widgets)
+
         add_label(5, 0, "Cloudflare API Base:", provider=self._cf_widgets)
         self.cloudflare_api_base_var = tk.StringVar(value=config.get("cloudflare_api_base", ""))
         self.cloudflare_api_base_entry = tk_entry(config_frame, textvariable=self.cloudflare_api_base_var, width=72)
@@ -1577,6 +1582,7 @@ class GrokRegisterGUI:
         config["cloudflare_api_base"] = self.cloudflare_api_base_var.get().strip()
         config["cloudflare_api_key"] = self.cloudflare_api_key_var.get().strip()
         config["cloudflare_auth_mode"] = self.cloudflare_auth_mode_var.get().strip() or "none"
+        config["defaultDomains"] = self.default_domains_var.get().strip()
         config["cloudmail_api_base"] = self.cloudmail_api_base_var.get().strip()
         config["cloudmail_public_token"] = self.cloudmail_public_token_var.get().strip()
         config["cloudmail_domains"] = self.cloudmail_domains_var.get().strip()

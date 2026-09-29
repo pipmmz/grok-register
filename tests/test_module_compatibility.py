@@ -36,6 +36,8 @@ class ModuleCompatibilityTests(unittest.TestCase):
             "cloudflare_api_base": "https://temp-mail.example.com",
             "cloudflare_auth_mode": "none",
             "cloudflare_api_key": "",
+            # 显式写死,避免受本机 config.json 影响
+            "cloudflare_path_accounts": "/api/new_address",
         })
         lines = []
         with patch.object(mail_service, "get_email_and_token", side_effect=RuntimeError("boom")):
