@@ -16,8 +16,9 @@
     ['proxy_pool_probe_dual_stack','checkbox'],
     ['proxy_pool_max_concurrent_per_node','number',{min:1,max:64}],
     ['proxy_pool_acquire_timeout_sec','number',{min:1,max:600}],
-    ['proxy_protocol_backend','select',['auto','sing-box','native-only']],
+    ['proxy_protocol_backend','select',['auto','sing-box','mihomo','native-only']],
     ['proxy_singbox_path','text','full'],
+    ['proxy_mihomo_path','text','full'],
     ['proxy_protocol_start_timeout_sec','number',{min:3,max:60}],
     ['proxy_runtime_idle_ttl_sec','number',{min:0,max:3600}],
     ['proxy_runtime_cache_max','number',{min:1,max:256}],
@@ -72,8 +73,9 @@
     proxy_pool_probe_dual_stack:['双栈探测','分别执行 IPv4 / IPv6 连通性探测。'],
     proxy_pool_max_concurrent_per_node:['单节点最大并发','默认 1，避免多个注册 Session 共用同一固定出口。'],
     proxy_pool_acquire_timeout_sec:['租约等待超时（秒）','代理被占用或冷却时等待可用节点的最长时间。'],
-    proxy_protocol_backend:['高级协议后端','auto：原生 HTTP/SOCKS 通过统一 HTTP endpoint 使用，高级协议自动通过 sing-box；native-only 禁用高级协议。'],
+    proxy_protocol_backend:['高级协议后端','auto：原生 HTTP/SOCKS 通过统一 HTTP endpoint 使用，高级协议优先 sing-box、没装则用 mihomo；也可显式指定 sing-box / mihomo；native-only 禁用高级协议。'],
     proxy_singbox_path:['sing-box 路径','留空时从 PATH 自动寻找 sing-box；VLESS/VMess/Trojan/Hysteria2/TUIC/Shadowsocks 使用。'],
+    proxy_mihomo_path:['mihomo 路径','留空时从 PATH 自动寻找 mihomo；选择 mihomo 后端时用它生成 Clash 配置并暴露本地 mixed-port。'],
     proxy_protocol_start_timeout_sec:['高级协议启动超时（秒）','等待本地 sing-box HTTP 出口就绪的最长时间。'],
     proxy_runtime_idle_ttl_sec:['运行时空闲缓存（秒）','引用数归零后继续保留一段时间，避免重复启动 bridge / sing-box；0 表示立即关闭。'],
     proxy_runtime_cache_max:['运行时缓存上限','空闲运行时超过上限时优先清理最久未使用项。'],
@@ -98,8 +100,9 @@
     proxy_pool_probe_dual_stack:['Dual-stack probe','Probe IPv4 and IPv6 connectivity independently.'],
     proxy_pool_max_concurrent_per_node:['Max sessions per node','Defaults to 1 to avoid sharing one fixed exit across account sessions.'],
     proxy_pool_acquire_timeout_sec:['Lease wait timeout (seconds)','Maximum wait while nodes are busy or cooling down.'],
-    proxy_protocol_backend:['Advanced protocol backend','auto normalizes native proxies and routes advanced protocols through sing-box; native-only disables advanced protocols.'],
+    proxy_protocol_backend:['Advanced protocol backend','auto normalizes native proxies and routes advanced protocols through sing-box when present, otherwise mihomo; sing-box / mihomo force one core; native-only disables advanced protocols.'],
     proxy_singbox_path:['sing-box path','Leave blank to resolve from PATH; used by VLESS/VMess/Trojan/Hysteria2/TUIC/Shadowsocks.'],
+    proxy_mihomo_path:['mihomo path','Leave blank to resolve from PATH; used when the mihomo backend renders Clash config and exposes a local mixed-port.'],
     proxy_protocol_start_timeout_sec:['Advanced protocol startup timeout','Maximum wait for the local sing-box HTTP endpoint to become ready.'],
     proxy_runtime_idle_ttl_sec:['Runtime idle TTL','Keep idle bridge/sing-box runtimes for reuse; 0 closes immediately.'],
     proxy_runtime_cache_max:['Runtime cache limit','Evict oldest idle runtimes after this limit.'],
@@ -203,7 +206,7 @@
       const failures = node.rotating ? `${node.exit_failures || 0} exits` : `${node.failure_count || 0} · transport=${node.transport_failures || 0} · config=${node.configuration_failures || 0}`;
       return `<tr>
         <td title="${esc(node.id)}"><span class="proxy-dot ${status}"></span>${esc(label)}</td>
-        <td>${esc(node.protocol || '—')}</td><td>${esc(node.backend || 'native')}</td>
+        <td>${esc(node.protocol || '—')}</td><td>${esc(node.core || node.backend || 'native')}</td>
         <td>${node.rotating ? 'rotating gateway' : 'fixed'}</td><td>${esc(probeText(node.probe_status))}</td>
         <td>${esc(health)}</td><td>${esc(successAttempts)}</td><td>${esc(latency)}</td><td>${esc(node.exit_ip || '—')}</td>
         <td>${esc(node.inflight)}</td><td>${esc(failures)}</td><td>${node.rotating ? 'N/A' : (node.cooldown_sec ? esc(node.cooldown_sec)+' s' : '—')}</td>

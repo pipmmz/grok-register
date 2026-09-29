@@ -107,6 +107,11 @@ class ProxyPoolStore:
         self._loaded = False
 
     # ---------------------------------------------------------------- 读
+    def stamp(self) -> Optional[tuple]:
+        """文件当前的时间戳标记(不存在时为 None),用于变更检测。"""
+        with self._lock:
+            return self._stamp_of()
+
     def _stamp_of(self) -> Optional[tuple]:
         try:
             stat = os.stat(self.path)

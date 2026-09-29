@@ -27,7 +27,7 @@ HTTP + auth / HTTPS proxy / SOCKS4 / SOCKS5
     → http://127.0.0.1:<port>
 
 VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks
-    → sing-box
+    → sing-box / mihomo
     → http://127.0.0.1:<port>
 ```
 
@@ -68,6 +68,7 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
 
   "proxy_protocol_backend": "auto",
   "proxy_singbox_path": "",
+  "proxy_mihomo_path": "",
   "proxy_protocol_start_timeout_sec": 10,
   "proxy_runtime_idle_ttl_sec": 120,
   "proxy_runtime_cache_max": 32,
@@ -186,7 +187,18 @@ TUIC
 Shadowsocks / ss
 ```
 
-Advanced protocols are converted on demand by sing-box into a local HTTP endpoint. If `proxy_singbox_path` is empty, the project looks for `sing-box` in the system `PATH`; it does not automatically download or update it.
+Advanced protocols are converted on demand into a local HTTP endpoint by sing-box or mihomo. `proxy_protocol_backend` picks the core:
+
+| Value | Behavior |
+| --- | --- |
+| `auto` | Use `sing-box` first (`proxy_singbox_path` or `PATH`), otherwise `mihomo` (`proxy_mihomo_path` or `PATH`). |
+| `sing-box` | sing-box only; a missing binary is an error. |
+| `mihomo` | mihomo only; a missing binary is an error. |
+| `native-only` | Disables advanced protocols; only native HTTP/HTTPS/SOCKS remain. |
+
+Both cores expose exactly one local HTTP endpoint, so behavior above them is identical; only the generated configuration differs: sing-box uses JSON (`sing-box run -c`) while mihomo uses Clash configuration (`mihomo -d <directory>` with `config.yaml` inside, written as JSON since YAML is a superset of JSON). The configuration is validated before launch (`sing-box check` / `mihomo -t`); a rejection is recorded as that node's backend error and disables the node.
+
+The `mihomo` backend does not support the `quic` / `httpupgrade` transports; such nodes fail with an explicit error telling you to use `proxy_protocol_backend=sing-box` instead of degrading silently. When `proxy_singbox_path` / `proxy_mihomo_path` are empty the binary is resolved from the system `PATH`; the project never downloads or updates it.
 
 Shadowsocks supports common SIP002 / legacy Base64 URIs. The built-in implementation currently supports common AEAD / 2022 methods; unsupported plugins or methods produce explicit errors rather than silently degrading.
 
@@ -224,7 +236,7 @@ SOCKS4 / SOCKS4A likewise preserve local / remote DNS semantics respectively.
 
 ## Runtime Idle Cache
 
-Runtimes are still created lazily; a large subscription does not cause a large number of bridge / sing-box runtimes to start all at once.
+Runtimes are still created lazily; a large subscription does not cause a large number of bridge / sing-box / mihomo runtimes to start all at once.
 
 After the reference count drops to 0, the runtime enters the idle cache by default:
 
@@ -495,7 +507,7 @@ POST   /api/proxy-pool/nodes/enabled          {"canonical": "...", "enabled": fa
 POST   /api/proxy-pool/preflight?node_id=<node-id>
 ```
 
-The node endpoints write the JSON list, update scheduling immediately and return the fresh snapshot; when `proxy_mode` is not `pool`, adding a node switches the mode to `pool` and explains it in the `notice` field. While a registration task is running these endpoints return 409, like the other maintenance operations.
+The node endpoints write the JSON list, update scheduling immediately and return the fresh snapshot; when `proxy_mode` is not `pool`, adding a node switches the mode to `pool` and explains it in the `notice` field. While a registration task is running these endpoints return 409, like the other maintenance operations. A node reference may be the raw URI, the canonical URI or the node id (the WebUI table sends the canonical URI; for advanced protocols it looks like `vless://<sha256>` and is not a parseable URI).
 
 Under the project's current local-use model, the WebUI, status API, and related logs continue to display full proxy addresses, including authentication information.
 
@@ -503,4 +515,4 @@ Under the project's current local-use model, the WebUI, status API, and related 
 
 The V3 behavior described here is concentrated in managed `single` / `pool` mode. The default `proxy_mode=auto` continues to preserve the legacy GUI/CLI/WebUI, email, result persistence, pending, token sync, and proxy behavior.
 
-Ordinary HTTP/SOCKS does not start sing-box merely because advanced-protocol support exists. VLESS/VMess/Trojan/Hysteria2/TUIC/Shadowsocks require sing-box only when actually acquired, probed, or preflighted.
+Ordinary HTTP/SOCKS does not start sing-box or mihomo merely because advanced-protocol support exists. VLESS/VMess/Trojan/Hysteria2/TUIC/Shadowsocks require a core only when actually acquired, probed, or preflighted.

@@ -1190,7 +1190,7 @@ class GrokRegisterGUI:
 
         add_label(19, 0, "高级协议后端:")
         self.proxy_protocol_backend_var = tk.StringVar(value=str(config.get("proxy_protocol_backend", "auto")))
-        self.proxy_protocol_backend_combo = tk_option_menu(config_frame, self.proxy_protocol_backend_var, ["auto", "sing-box", "native-only"], width=12)
+        self.proxy_protocol_backend_combo = tk_option_menu(config_frame, self.proxy_protocol_backend_var, ["auto", "sing-box", "mihomo", "native-only"], width=12)
         add_field(self.proxy_protocol_backend_combo, 19, 1, sticky=tk.W)
         add_label(19, 2, "sing-box 路径:")
         self.proxy_singbox_path_var = tk.StringVar(value=str(config.get("proxy_singbox_path", "")))
@@ -1224,6 +1224,11 @@ class GrokRegisterGUI:
             config_frame, text="管理 Outlook 邮箱池", command=self.manage_outlook_mailbox_pool
         )
         add_field(self.outlook_pool_btn, 22, 3, sticky=tk.W, provider=self._outlook_widgets)
+
+        add_label(23, 0, "mihomo 路径:")
+        self.proxy_mihomo_path_var = tk.StringVar(value=str(config.get("proxy_mihomo_path", "")))
+        self.proxy_mihomo_path_entry = tk_entry(config_frame, textvariable=self.proxy_mihomo_path_var, width=72)
+        add_field(self.proxy_mihomo_path_entry, 23, 1, columnspan=3)
 
         btn_frame = tk.Frame(main_frame, bg=UI_BG)
         btn_frame.grid(row=1, column=0, sticky=tk.EW, pady=(0, 6))
@@ -1564,6 +1569,7 @@ class GrokRegisterGUI:
         config["proxy_pool_endpoint_mode"] = self.proxy_endpoint_mode_var.get().strip() or "auto"
         config["proxy_protocol_backend"] = self.proxy_protocol_backend_var.get().strip() or "auto"
         config["proxy_singbox_path"] = self.proxy_singbox_path_var.get().strip()
+        config["proxy_mihomo_path"] = self.proxy_mihomo_path_var.get().strip()
         config["duckmail_api_key"] = self.api_key_var.get().strip()
         config["yyds_api_key"] = self.yyds_api_key_var.get().strip()
         config["yyds_jwt"] = self.yyds_jwt_var.get().strip()

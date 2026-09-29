@@ -118,7 +118,7 @@ Open registration page
 - Google Chrome or Chromium
 - Network access to the registration page and the selected email API
 - Tkinter is required for the GUI; use the CLI or WebUI if Tkinter is unavailable
-- **sing-box is required only when using VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks nodes**; HTTP/HTTPS/SOCKS continue to use the project's native proxy implementation
+- **sing-box or mihomo is required only when using VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks nodes**; HTTP/HTTPS/SOCKS continue to use the project's native proxy implementation
 
 ### 2. Installation
 
@@ -399,7 +399,7 @@ Native proxy:
 }
 ```
 
-`single` can also accept a supported advanced-protocol URI directly; advanced protocols require a local executable `sing-box`.
+`single` can also accept a supported advanced-protocol URI directly; advanced protocols require a local `sing-box` or `mihomo` (see `proxy_protocol_backend` in the proxy-pool section).
 
 ### Proxy pool
 
@@ -414,6 +414,7 @@ Native proxy:
   "proxy_pool_max_concurrent_per_node": 1,
   "proxy_protocol_backend": "auto",
   "proxy_singbox_path": "",
+  "proxy_mihomo_path": "",
   "proxy_protocol_start_timeout_sec": 10,
   "proxy_runtime_idle_ttl_sec": 120,
   "proxy_runtime_cache_max": 32
@@ -446,7 +447,7 @@ Currently supported:
 - Node parsing statistics, health probes, failure cooldowns, and automatic recovery
 - Fixed/rotating endpoints, `{account}`, concurrency limits, and stable account-level Proxy Leases
 
-The proxy runtime uses a lazy + idle-cache design: a local runtime is created only when a node is actually selected, probed, or preflighted. Native proxies that need a unified HTTP exit use `LocalProxyBridge`; VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks use sing-box. When the Lease reference count drops to 0, the runtime does not exit immediately by default; it moves into the idle cache. Defaults are `proxy_runtime_idle_ttl_sec=120` and `proxy_runtime_cache_max=32`. The runtime closes when TTL expires, the cache evicts it, or the Manager shuts down. Set `proxy_runtime_idle_ttl_sec=0` to restore immediate shutdown at zero references.
+The proxy runtime uses a lazy + idle-cache design: a local runtime is created only when a node is actually selected, probed, or preflighted. Native proxies that need a unified HTTP exit use `LocalProxyBridge`; VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks use sing-box or mihomo (`proxy_protocol_backend` selects the core; `auto` prefers sing-box and falls back to mihomo). When the Lease reference count drops to 0, the runtime does not exit immediately by default; it moves into the idle cache. Defaults are `proxy_runtime_idle_ttl_sec=120` and `proxy_runtime_cache_max=32`. The runtime closes when TTL expires, the cache evicts it, or the Manager shuts down. Set `proxy_runtime_idle_ttl_sec=0` to restore immediate shutdown at zero references.
 
 Within a single account attempt, the browser, email, NSFW, and default CPA all stay on the same Lease. The verification-code fetch window is 20s (`CODE_FETCH_TIMEOUT_SEC`); while waiting, if no usable code has been obtained, the program cools the current exit down, takes a new Lease, and retries with a different email address. Once verification-code entry/submission begins, later exceptions do not replay the registration by switching email or proxy; they are treated as an "outcome uncertain" state.
 
@@ -575,7 +576,7 @@ Recovery uses file locks, deduplication, and atomic replacement. Repeating the o
 ├── proxy_pool_v3.py           # Proxy-pool core: Source, Lease, health, cooldown, refresh, and Probe
 ├── proxy_bridge.py            # HTTP/HTTPS/SOCKS → localhost HTTP proxy bridge and Chromium compatibility
 ├── proxy_protocols.py         # HTTP/SOCKS/VLESS/VMess/Trojan/HY2/TUIC/SS subscription parsing
-├── proxy_protocol_runtime.py  # Native bridge / sing-box lazy runtime and idle cache
+├── proxy_protocol_runtime.py  # Native bridge / sing-box+mihomo lazy runtime and idle cache
 ├── mail_service.py            # Four email services
 ├── app_config.py              # Default configuration, validation, loading, and saving
 ├── account_outputs.py         # Account, pending, and token outputs
@@ -616,7 +617,7 @@ The auto-click only guarantees that the click reaches the cross-origin iframe. C
 
 ### Why are advanced-protocol nodes shown as unavailable?
 
-VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks require a local sing-box installation. By default, the project searches the system `PATH`; you can also set `proxy_singbox_path` in the WebUI / `config.json`. HTTP/HTTPS/SOCKS are unaffected.
+VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks require a local `sing-box` or `mihomo`. By default, the project searches the system `PATH`; you can also set `proxy_singbox_path` / `proxy_mihomo_path` in the WebUI / `config.json`, and `proxy_protocol_backend` can force `sing-box` or `mihomo`. HTTP/HTTPS/SOCKS are unaffected.
 
 ### Why are some V2Ray subscription nodes skipped?
 

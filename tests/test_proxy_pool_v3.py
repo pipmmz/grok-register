@@ -190,6 +190,135 @@ class ProxyPoolV3Tests(unittest.TestCase):
             finally:
                 restored.shutdown()
 
+    def test_advanced_nodes_accept_canonical_and_node_id_references(self):
+        """高级协议节点的 canonical 是 `proto://<sha256>`,UI 发的就是它,不能当 URI 解析。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(
+                proxy_mode="pool", proxy_pool_store_file=os.path.join(tmp, "proxy_pool.json"),
+                proxy_pool_probe_interval_sec=0, proxy_pool_endpoint_mode="fixed",
+            )
+            manager = ProxyPoolManager(cfg)
+            try:
+                uri = "vless://11111111-1111-1111-1111-111111111111@a.example.com:443?security=tls&sni=a.example.com#n"
+                added = manager.add_node(uri)
+                canonical = added["node"]["canonical"]
+                node_id = added["node"]["id"]
+                self.assertTrue(canonical.startswith("vless://"))
+
+                for reference in (canonical, node_id):
+                    manager.set_node_enabled(reference, False)
+                    self.assertFalse(manager.snapshot()["nodes"][0]["enabled"])
+                    manager.set_node_enabled(reference, True)
+                    self.assertTrue(manager.snapshot()["nodes"][0]["enabled"])
+                    manager.remove_node(reference)
+                    self.assertEqual(manager.snapshot()["nodes"], [])
+                    self.assertEqual(manager.snapshot()["store"]["total"], 0)
+                    manager.add_node(uri)
+
+                with self.assertRaises(ProxyPoolError):
+                    manager.remove_node("vless://deadbeef")
+            finally:
+                manager.shutdown()
+
+    def test_enabling_a_source_node_without_store_entry_only_restores_scheduling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_file = os.path.join(tmp, "proxy_pool.json")
+            pool_file = os.path.join(tmp, "proxies.txt")
+            Path(pool_file).write_text("http://127.0.0.1:8001\n", encoding="utf-8")
+            cfg = self.cfg(
+                proxy_mode="pool", proxy_pool_file=pool_file, proxy_pool_store_file=store_file,
+                proxy_pool_probe_interval_sec=0, proxy_pool_endpoint_mode="fixed",
+            )
+            manager = ProxyPoolManager(cfg)
+            try:
+                node = manager.snapshot()["nodes"][0]
+                with manager._condition:            # 模拟运行时失败把来源节点禁用
+                    manager._nodes[node["id"]].enabled = False
+                self.assertFalse(manager.snapshot()["nodes"][0]["enabled"])
+                result = manager.set_node_enabled(node["canonical"], True)
+                self.assertTrue(result["enabled"])
+                self.assertTrue(manager.snapshot()["nodes"][0]["enabled"])
+                self.assertEqual(manager.snapshot()["store"]["total"], 0)   # 不写清单
+            finally:
+                manager.shutdown()
+
+    def test_local_store_edits_sync_without_refetching_subscription(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_file = os.path.join(tmp, "proxy_pool.json")
+            pool_file = os.path.join(tmp, "proxies.txt")
+            Path(pool_file).write_text("http://127.0.0.1:8001\n", encoding="utf-8")
+            cfg = self.cfg(
+                proxy_mode="pool", proxy_pool_file=pool_file, proxy_pool_store_file=store_file,
+                proxy_pool_refresh_interval_sec=900, proxy_pool_probe_interval_sec=0,
+            )
+            seed = ProxyPoolStore(store_file)
+            seed.load()
+            seed.add("http://127.0.0.1:8002")
+            manager = ProxyPoolManager(cfg)
+            try:
+                self.assertEqual(
+                    sorted(node["canonical"] for node in manager.snapshot()["nodes"]),
+                    ["http://127.0.0.1:8001", "http://127.0.0.1:8002"],
+                )
+
+                # 手工/别的进程往清单里加节点:同步前调度里看不到
+                editor = ProxyPoolStore(store_file)
+                editor.load()
+                editor.add("http://127.0.0.1:8003")
+                self.assertEqual(len(manager.snapshot()["nodes"]), 2)
+
+                # 同步本地来源(不重新拉订阅),立刻可见
+                with patch.object(manager, "_fetch_subscription", side_effect=AssertionError("不应重新拉取订阅")):
+                    self.assertTrue(manager.sync_local_sources())
+                self.assertEqual(
+                    sorted(node["canonical"] for node in manager.snapshot()["nodes"]),
+                    ["http://127.0.0.1:8001", "http://127.0.0.1:8002", "http://127.0.0.1:8003"],
+                )
+
+                # 手工禁用同样即时生效
+                editor2 = ProxyPoolStore(store_file)
+                editor2.load()
+                editor2.set_enabled("http://127.0.0.1:8002", False)
+                self.assertTrue(manager.sync_local_sources())
+                self.assertEqual(
+                    sorted(node["canonical"] for node in manager.snapshot()["nodes"] if node["enabled"]),
+                    ["http://127.0.0.1:8001", "http://127.0.0.1:8003"],
+                )
+
+                # 没有变化时不做多余工作
+                self.assertFalse(manager.sync_local_sources())
+            finally:
+                manager.shutdown()
+
+    def test_local_sync_retries_when_refresh_lock_is_busy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_file = os.path.join(tmp, "proxy_pool.json")
+            seed = ProxyPoolStore(store_file)
+            seed.load()
+            seed.add("http://127.0.0.1:8001")
+            cfg = self.cfg(
+                proxy_mode="pool", proxy_pool_store_file=store_file,
+                proxy_pool_refresh_interval_sec=900, proxy_pool_probe_interval_sec=0,
+            )
+            manager = ProxyPoolManager(cfg)
+            try:
+                manager._refresh_lock.acquire()
+                try:
+                    editor = ProxyPoolStore(store_file)
+                    editor.load()
+                    editor.add("http://127.0.0.1:8002")
+                    self.assertFalse(manager.sync_local_sources())    # 锁被占用,这次先不同步
+                finally:
+                    manager._refresh_lock.release()
+                # 关键:改动不能被吞掉,下一次同步必须补上
+                self.assertTrue(manager.sync_local_sources())
+                self.assertEqual(
+                    sorted(node["canonical"] for node in manager.snapshot()["nodes"]),
+                    ["http://127.0.0.1:8001", "http://127.0.0.1:8002"],
+                )
+            finally:
+                manager.shutdown()
+
     def test_store_nodes_are_pooled_immediately_and_survive_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             store_file = os.path.join(tmp, "proxy_pool.json")

@@ -109,6 +109,27 @@ class ProxyPoolNodesWebTests(unittest.TestCase):
         self.assertEqual(empty.status_code, 400)
         self.assertFalse(os.path.exists(self.store_file))
 
+    def test_advanced_node_can_be_removed_by_returned_canonical(self):
+        """WebUI 表格的移除按钮发的是 canonical,高级协议节点的 canonical 不是可解析 URI。"""
+        uri = "vless://11111111-1111-1111-1111-111111111111@a.example.com:443?security=tls&sni=a.example.com#n"
+        added = self.client.post("/api/proxy-pool/nodes", json={"uri": uri})
+        self.assertEqual(added.status_code, 200)
+        canonical = added.json()["added"]["canonical"]
+        self.assertTrue(canonical.startswith("vless://"))
+
+        disabled = self.client.post("/api/proxy-pool/nodes/enabled", json={"canonical": canonical, "enabled": False})
+        self.assertEqual(disabled.status_code, 200)
+        self.assertFalse(disabled.json()["nodes"][0]["enabled"])
+
+        restored = self.client.post("/api/proxy-pool/nodes/enabled", json={"canonical": canonical, "enabled": True})
+        self.assertEqual(restored.status_code, 200)
+        self.assertTrue(restored.json()["nodes"][0]["enabled"])
+
+        removed = self.client.delete("/api/proxy-pool/nodes", params={"canonical": canonical})
+        self.assertEqual(removed.status_code, 200)
+        self.assertEqual(removed.json()["nodes"], [])
+        self.assertEqual(removed.json()["store"]["total"], 0)
+
     def test_remove_and_restore_node_round_trip(self):
         self.client.post("/api/proxy-pool/nodes", json={"uri": "http://127.0.0.1:8001"})
         removed = self.client.delete("/api/proxy-pool/nodes?canonical=http%3A%2F%2F127.0.0.1%3A8001")
@@ -123,6 +144,10 @@ class ProxyPoolNodesWebTests(unittest.TestCase):
         self.assertEqual(disabled.status_code, 200)
         self.assertFalse(disabled.json()["nodes"][0]["enabled"])
         self.assertEqual(disabled.json()["store"]["disabled"], 1)
+        # WebUI 的"已移除"chips 依赖清单条目列表
+        entries = {item["canonical"]: item for item in disabled.json()["store"]["nodes"]}
+        self.assertEqual(entries["http://127.0.0.1:8001"]["uri"], "http://127.0.0.1:8001")
+        self.assertFalse(entries["http://127.0.0.1:8001"]["enabled"])
 
         restored = self.client.post(
             "/api/proxy-pool/nodes/enabled", json={"canonical": "http://127.0.0.1:8001", "enabled": True}

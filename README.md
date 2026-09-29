@@ -118,7 +118,7 @@ Grok Register 使用真实 Chromium / Chrome 完成注册流程，并把 GUI、C
 - Google Chrome 或 Chromium
 - 可访问注册页面和所选邮箱 API 的网络环境
 - GUI 需要 Tkinter；没有 Tkinter 时可以使用 CLI 或 WebUI
-- **仅当使用 VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks 节点时需要 sing-box**；HTTP/HTTPS/SOCKS 继续使用项目原生代理实现
+- **仅当使用 VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks 节点时需要 sing-box 或 mihomo**；HTTP/HTTPS/SOCKS 继续使用项目原生代理实现
 
 ### 2. 安装
 
@@ -399,7 +399,7 @@ Cloud Mail 的 Public Token 直接放在 `Authorization` 请求头中，不需�
 }
 ```
 
-`single` 也可以直接填写受支持的高级协议 URI；高级协议需要本机可执行的 `sing-box`。
+`single` 也可以直接填写受支持的高级协议 URI；高级协议需要本机可执行的 `sing-box` 或 `mihomo`（见「代理池」一节的 `proxy_protocol_backend`）。
 
 ### 代理池
 
@@ -414,6 +414,7 @@ Cloud Mail 的 Public Token 直接放在 `Authorization` 请求头中，不需�
   "proxy_pool_max_concurrent_per_node": 1,
   "proxy_protocol_backend": "auto",
   "proxy_singbox_path": "",
+  "proxy_mihomo_path": "",
   "proxy_protocol_start_timeout_sec": 10,
   "proxy_runtime_idle_ttl_sec": 120,
   "proxy_runtime_cache_max": 32
@@ -446,7 +447,7 @@ ss://...
 - 节点解析统计、健康探测、失败冷却和自动恢复
 - 固定/旋转入口、`{account}`、并发限制和账号级稳定 Proxy Lease
 
-代理 runtime 采用 lazy + idle cache 机制：节点只有在实际被选中、probe 或 preflight 时才建立本地 runtime。需要统一 HTTP 出口的原生代理会使用 `LocalProxyBridge`；VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks 使用 sing-box。Lease 引用数降为 0 后 runtime 默认不会立即退出，而是进入空闲缓存；默认 `proxy_runtime_idle_ttl_sec=120`、`proxy_runtime_cache_max=32`，TTL 到期、缓存淘汰或 Manager shutdown 时才会关闭。设置 `proxy_runtime_idle_ttl_sec=0` 可恢复零引用立即关闭。
+代理 runtime 采用 lazy + idle cache 机制：节点只有在实际被选中、probe 或 preflight 时才建立本地 runtime。需要统一 HTTP 出口的原生代理会使用 `LocalProxyBridge`；VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks 使用 sing-box 或 mihomo（`proxy_protocol_backend` 选择，`auto` 时优先 sing-box、没装则用 mihomo）。Lease 引用数降为 0 后 runtime 默认不会立即退出，而是进入空闲缓存；默认 `proxy_runtime_idle_ttl_sec=120`、`proxy_runtime_cache_max=32`，TTL 到期、缓存淘汰或 Manager shutdown 时才会关闭。设置 `proxy_runtime_idle_ttl_sec=0` 可恢复零引用立即关闭。
 
 同一个账号 attempt 内，浏览器、邮箱、NSFW 和默认 CPA 保持同一个 Lease。拉取验证码的等待窗口为 20s（`CODE_FETCH_TIMEOUT_SEC`），等待期间若确认尚未取得可用验证码，会冷却当前出口、换一个新租约并更换邮箱后重试；一旦进入验证码填写/提交阶段，后续异常不会再通过换邮箱或换代理重放注册，而会按“结果不确定”处理。
 
@@ -575,7 +576,7 @@ python grok_register_ttk.py retry-pending <pending文件> [输出文件]
 ├── proxy_pool_v3.py           # 代理池核心：Source、Lease、健康度、冷却、刷新与 Probe
 ├── proxy_bridge.py            # HTTP/HTTPS/SOCKS → localhost HTTP 代理桥与 Chromium 兼容
 ├── proxy_protocols.py         # HTTP/SOCKS/VLESS/VMess/Trojan/HY2/TUIC/SS 订阅解析
-├── proxy_protocol_runtime.py  # Native bridge / sing-box lazy runtime 与 idle cache
+├── proxy_protocol_runtime.py  # Native bridge / sing-box+mihomo lazy runtime 与 idle cache
 ├── mail_service.py            # 四种邮箱服务
 ├── app_config.py              # 默认配置、校验、加载与保存
 ├── account_outputs.py         # 账号、pending 与 token 输出
@@ -616,7 +617,7 @@ CLI 只是不启动 Tk GUI。注册页交互、验证码提交和 SSO cookie 获
 
 ### 为什么高级协议节点显示 unavailable？
 
-VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks 需要本地 sing-box。默认从系统 `PATH` 查找，也可以在 WebUI / `config.json` 设置 `proxy_singbox_path`。HTTP/HTTPS/SOCKS 不受影响。
+VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks 需要本地 `sing-box` 或 `mihomo`。默认从系统 `PATH` 查找，也可以在 WebUI / `config.json` 设置 `proxy_singbox_path` / `proxy_mihomo_path`；`proxy_protocol_backend` 可以强制指定 `sing-box` 或 `mihomo`。HTTP/HTTPS/SOCKS 不受影响。
 
 ### 为什么某些 V2Ray 订阅节点会被跳过？
 

@@ -28,6 +28,7 @@
   "proxy_pool_acquire_timeout_sec": 30,
   "proxy_protocol_backend": "auto",
   "proxy_singbox_path": "",
+  "proxy_mihomo_path": "",
   "proxy_protocol_start_timeout_sec": 10,
   "proxy_runtime_idle_ttl_sec": 120,
   "proxy_runtime_cache_max": 32,

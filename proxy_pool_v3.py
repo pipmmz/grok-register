@@ -134,7 +134,7 @@ def _config_signature(config):
         "proxy_pool_probe_interval_sec", "proxy_pool_probe_timeout_sec",
         "proxy_pool_probe_provider", "proxy_pool_probe_dual_stack",
         "proxy_pool_max_concurrent_per_node", "proxy_pool_acquire_timeout_sec",
-        "proxy_protocol_backend", "proxy_singbox_path", "proxy_protocol_start_timeout_sec",
+        "proxy_protocol_backend", "proxy_singbox_path", "proxy_mihomo_path", "proxy_protocol_start_timeout_sec",
         "proxy_runtime_idle_ttl_sec", "proxy_runtime_cache_max",
         "proxy_pool_persist_health", "proxy_pool_state_file",
         "proxy_pool_subscription_public_only", "proxy_pool_store_file",
@@ -302,6 +302,7 @@ class ProxyPoolManager:
         self.store = ProxyPoolStore(self.store_path, log=self.log)
         self._store_ready = False
         self._assembly_error = ""
+        self._local_stamp = None
         self._runtime = ProtocolRuntimeManager(self.config, log=self.log)
         try:
             self.reload_sources(force=True)
@@ -509,7 +510,7 @@ class ProxyPoolManager:
             else:
                 state.diagnostics = {"stale": True, "error": state.last_error, "generation": state.generation}
 
-    def _source_entries(self):
+    def _source_entries(self, refresh=("file", "subscription", "manual")):
         if self.mode == "single":
             try:
                 return [("single", parse_proxy_line(self.config.get("proxy")))]
@@ -517,10 +518,13 @@ class ProxyPoolManager:
                 raise ProxyPoolError(str(exc)) from exc
         if self.mode != "pool":
             return []
-        self._refresh_source("file", self._read_file_source)
-        self._refresh_source("subscription", self._fetch_subscription)
-        # 节点清单没有对应的配置键(旧键只用于迁移),有内容或文件存在时就要读取。
-        self._refresh_source("manual", self._read_store_source, configured=self._store_source_configured())
+        if "file" in refresh:
+            self._refresh_source("file", self._read_file_source)
+        if "subscription" in refresh:
+            self._refresh_source("subscription", self._fetch_subscription)
+        if "manual" in refresh:
+            # 节点清单没有对应的配置键(旧键只用于迁移),有内容或文件存在时就要读取。
+            self._refresh_source("manual", self._read_store_source, configured=self._store_source_configured())
         values = []
         for name in ("file", "subscription", "manual"):
             values.extend((name, item) for item in self._source_states[name].descriptors)
@@ -552,13 +556,13 @@ class ProxyPoolManager:
             self.log("[!] 代理池节点清单读取失败: %s" % exc)
             return set()
 
-    def _reload_sources_locked(self, force=False):
+    def _reload_sources_locked(self, force=False, refresh=("file", "subscription", "manual")):
         """Refresh sources while the dedicated refresh lock is held."""
         now = time.time()
         with self._lock:
             if not force and self.refresh_interval > 0 and now - self._last_refresh < self.refresh_interval:
                 return self.snapshot()
-        entries = self._source_entries()
+        entries = self._source_entries(refresh=refresh)
         with self._condition:
             previous, updated = self._nodes, {}
             for source, descriptor in entries:
@@ -583,6 +587,7 @@ class ProxyPoolManager:
             self._nodes = updated
             self._last_refresh = now
             self._assembly_error = ""
+            self._local_stamp = self._local_source_stamp()
             self._condition.notify_all()
         self._save_state_file()
         return self.snapshot()
@@ -593,9 +598,52 @@ class ProxyPoolManager:
         with self._refresh_lock:
             return self._reload_sources_locked(force=force)
 
+    def _local_source_stamp(self):
+        """本地来源(代理池文件 + JSON 节点清单)的变更标记。"""
+        stamp = [None, None]
+        path = str(self.config.get("proxy_pool_file") or "").strip()
+        if path:
+            path = os.path.expanduser(path)
+            if not os.path.isabs(path):
+                path = os.path.join(_ROOT, path)
+            try:
+                stat = os.stat(path)
+                stamp[0] = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                stamp[0] = None
+        if self._store_ready:
+            try:
+                stamp[1] = self.store.stamp()
+            except ProxyPoolStoreError:
+                stamp[1] = None
+        return tuple(stamp)
+
+    def sync_local_sources(self) -> bool:
+        """本地来源被改动(手工编辑/别的进程写入)后即时同步,不重新拉订阅。"""
+        if not self.managed or self.mode != "pool":
+            return False
+        if not self._ensure_store():
+            return False
+        stamp = self._local_source_stamp()
+        if stamp == self._local_stamp:
+            return False
+        if not self._refresh_lock.acquire(blocking=False):
+            # 锁被占用时不要记录 stamp:留给下一次调用重试,否则这次改动会被吞掉。
+            return False
+        try:
+            self._reload_sources_locked(force=True, refresh=("file", "manual"))
+        except Exception as exc:
+            self._assembly_error = str(exc)
+            self.log("[!] 本地代理源同步失败，继续使用当前节点: %s" % safe_proxy_error_text(exc))
+            return False
+        finally:
+            self._refresh_lock.release()
+        return True
+
     def refresh_if_due(self):
         if not self.managed:
             return
+        self.sync_local_sources()
         now = time.time()
         with self._lock:
             due = self.refresh_interval > 0 and now - self._last_refresh >= self.refresh_interval
@@ -648,6 +696,34 @@ class ProxyPoolManager:
                     return name, descriptor
         return "", None
 
+    def _resolve_node_reference(self, reference):
+        """把节点标识解析成 (node_id, raw_uri, canonical)。
+
+        UI 表格/移除按钮发的是 canonical,而高级协议节点的 canonical 是
+        `vless://<sha256>` 这种伪 URI,不能直接当 URI 解析,所以这里支持三种写法:
+        原始 URI、canonical、node_id。
+        """
+        text = str(reference or "").strip()
+        if not text:
+            raise ProxyPoolError("节点标识不能为空")
+        try:
+            descriptor = parse_proxy_line(text)
+            return descriptor.node_id, descriptor.raw_uri, descriptor.canonical_uri
+        except ProxyProtocolError:
+            pass
+        with self._lock:
+            for node in self._nodes.values():
+                if text in (node.id, node.descriptor.canonical_uri, node.descriptor.raw_uri):
+                    return node.id, node.descriptor.raw_uri, node.descriptor.canonical_uri
+        if self._ensure_store():
+            try:
+                for entry in self.store.entries():
+                    if text in (entry.node_id, entry.canonical, entry.uri):
+                        return entry.node_id, entry.uri, entry.canonical
+            except ProxyPoolStoreError as exc:
+                raise ProxyPoolError(str(exc)) from exc
+        raise ProxyPoolError("节点不在代理池中: %s" % text)
+
     def add_node(self, uri, enabled=True):
         """写入 JSON 节点清单并立即参与调度。"""
         self._require_pool_mode()
@@ -659,24 +735,28 @@ class ProxyPoolManager:
         except (ProxyPoolStoreError, ProxyProtocolError) as exc:
             raise ProxyPoolError(str(exc)) from exc
         node = self._insert_node(descriptor, source="manual", enabled=enabled)
+        self._local_stamp = self._local_source_stamp()
         self.log("[*] 代理池已添加节点: %s" % proxy_log_label(entry.canonical))
         return {"node": self._node_snapshot(node, origin=ORIGIN_USER), "store": self.store.as_dict()}
 
     def remove_node(self, uri):
-        """移除节点:用户添加的从清单删除,文件/订阅节点写禁用覆盖。"""
+        """移除节点:用户添加的从清单删除,文件/订阅节点写禁用覆盖。
+
+        `uri` 可以是原始 URI、canonical 或 node_id(WebUI 发的是 canonical)。
+        """
         self._require_pool_mode()
         if not self._ensure_store():
             raise ProxyPoolError("代理池节点清单不可用: %s" % self.store_path)
+        node_id, raw_uri, canonical = self._resolve_node_reference(uri)
         try:
-            entry = self.store.remove(uri)
+            entry = self.store.remove(raw_uri)
             if entry is None:
                 # 文件/订阅节点(或未登记节点)没有存储条目:写一条禁用覆盖。
-                entry = self.store.set_enabled(uri, False)
-            descriptor = parse_proxy_line(entry.uri)
-        except (ProxyPoolStoreError, ProxyProtocolError) as exc:
+                entry = self.store.set_enabled(raw_uri, False)
+        except ProxyPoolStoreError as exc:
             raise ProxyPoolError(str(exc)) from exc
         with self._condition:
-            node = self._nodes.get(descriptor.node_id)
+            node = self._nodes.get(node_id)
             if node is not None:
                 if entry.origin == ORIGIN_USER:
                     if node.inflight > 0:
@@ -686,31 +766,49 @@ class ProxyPoolManager:
                 else:
                     node.enabled = False
             self._condition.notify_all()
-        self.log("[*] 代理池已移除节点: %s" % proxy_log_label(entry.canonical))
-        return {"canonical": entry.canonical, "origin": entry.origin, "in_pool": node is not None, "store": self.store.as_dict()}
+        self._local_stamp = self._local_source_stamp()
+        self.log("[*] 代理池已移除节点: %s" % proxy_log_label(canonical))
+        return {"canonical": canonical, "origin": entry.origin, "in_pool": node is not None, "store": self.store.as_dict()}
 
     def set_node_enabled(self, uri, enabled):
-        """启用/禁用节点;启用时节点不在池中会就地补入。"""
+        """启用/禁用节点;启用时节点不在池中会就地补入。
+
+        `uri` 可以是原始 URI、canonical 或 node_id(WebUI 发的是 canonical)。
+        """
         self._require_pool_mode()
         if not self._ensure_store():
             raise ProxyPoolError("代理池节点清单不可用: %s" % self.store_path)
+        node_id, raw_uri, canonical = self._resolve_node_reference(uri)
         try:
-            entry = self.store.set_enabled(uri, enabled)
-            descriptor = parse_proxy_line(entry.uri)
-        except (ProxyPoolStoreError, ProxyProtocolError) as exc:
+            existing = self.store.get(raw_uri)
+        except ProxyPoolStoreError as exc:
+            raise ProxyPoolError(str(exc)) from exc
+        if existing is None and enabled:
+            # 清单里没有条目(例如来源节点被运行时失败禁用):只恢复调度状态,不写清单。
+            with self._condition:
+                node = self._nodes.get(node_id)
+                if node is not None:
+                    node.enabled = True
+                    node.retired = False
+                    self._condition.notify_all()
+            return {"canonical": canonical, "enabled": True, "in_pool": node is not None, "store": self.store.as_dict()}
+        try:
+            entry = self.store.set_enabled(raw_uri, enabled)
+        except ProxyPoolStoreError as exc:
             raise ProxyPoolError(str(exc)) from exc
         with self._condition:
-            node = self._nodes.get(descriptor.node_id)
+            node = self._nodes.get(node_id)
         if enabled and node is None:
-            source, source_descriptor = self._source_descriptor_for(entry.canonical)
-            node = self._insert_node(source_descriptor or descriptor, source=source or "manual", enabled=True)
+            source, source_descriptor = self._source_descriptor_for(canonical)
+            node = self._insert_node(source_descriptor or parse_proxy_line(raw_uri), source=source or "manual", enabled=True)
         elif node is not None:
             with self._condition:
                 node.enabled = bool(enabled)
                 if enabled:
                     node.retired = False
                 self._condition.notify_all()
-        return {"canonical": entry.canonical, "enabled": bool(enabled), "in_pool": node is not None, "store": self.store.as_dict()}
+        self._local_stamp = self._local_source_stamp()
+        return {"canonical": canonical, "enabled": bool(enabled), "in_pool": node is not None, "store": self.store.as_dict()}
 
     def _schedule_periodic_probe_if_due(self):
         if not self.managed or self.probe_interval <= 0:
@@ -1101,6 +1199,7 @@ class ProxyPoolManager:
             "probe_error": str(node.probe_error or "")[:300], "exit_ip": node.exit_ip,
             "ipv4_probe": self._family_dict(node.ipv4_probe), "ipv6_probe": self._family_dict(node.ipv6_probe),
             "inflight": int(node.inflight), "retired": bool(node.retired), "origin": origin,
+            "core": "" if node.backend == "native" else self._runtime.core_name,
         }
 
     def _store_origins(self):
@@ -1121,10 +1220,10 @@ class ProxyPoolManager:
                 self._node_snapshot(node, now, origins.get(node.descriptor.canonical_uri, ""))
                 for node in sorted(self._nodes.values(), key=lambda value: value.id)
             ]
-            store = {"path": self.store_path, "total": 0, "disabled": 0, "user_nodes": 0}
+            store = {"path": self.store_path, "total": 0, "disabled": 0, "user_nodes": 0, "nodes": []}
             try:
                 summary = self.store.as_dict()
-                store.update({key: summary[key] for key in ("total", "disabled", "user_nodes")})
+                store.update({key: summary[key] for key in ("total", "disabled", "user_nodes", "nodes")})
             except ProxyPoolStoreError as exc:
                 store["error"] = str(exc)
             return {"mode": self.mode, "managed": self.managed, "fallback": self.fallback, "capacity": self.capacity, "nodes": nodes, "sources": dict(self._source_diagnostics), "runtime": self._runtime.active_snapshot(), "persist_health": self.persist_health, "store": store, "error": self._assembly_error}
@@ -1205,6 +1304,9 @@ def report_current_suspected_transport_failure(error):
 
 
 def manager_snapshot(config=None):
-    try: return get_manager(config=config).snapshot()
+    try:
+        manager = get_manager(config=config)
+        manager.sync_local_sources()
+        return manager.snapshot()
     except Exception as exc:
         return {"mode": str((config or {}).get("proxy_mode") or "auto"), "managed": False, "nodes": [], "sources": {}, "error": safe_proxy_error_text(exc)}

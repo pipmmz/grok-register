@@ -36,6 +36,7 @@ DEFAULT_CONFIG = {
     "proxy_pool_acquire_timeout_sec": 30,
     "proxy_protocol_backend": "auto",
     "proxy_singbox_path": "",
+    "proxy_mihomo_path": "",
     "proxy_protocol_start_timeout_sec": 10,
     "proxy_runtime_idle_ttl_sec": 120,
     "proxy_runtime_cache_max": 32,
@@ -176,7 +177,7 @@ def validate_config_structure(raw):
     string_keys = tuple(key for key, value in DEFAULT_CONFIG.items() if isinstance(value, str))
     path_keys = {
         "grok2api_local_token_file", "api_reverse_tools", "cpa_auth_dir", "cpa_hotload_dir",
-        "proxy_pool_file", "proxy_singbox_path", "proxy_pool_state_file", "proxy_pool_store_file",
+        "proxy_pool_file", "proxy_singbox_path", "proxy_mihomo_path", "proxy_pool_state_file", "proxy_pool_store_file",
         "sso_risk_rejected_file", "outlook_accounts_file",
     }
     for key in string_keys:
@@ -189,7 +190,7 @@ def validate_config_structure(raw):
         "proxy_fallback": {"none", "direct", "single"},
         "proxy_pool_endpoint_mode": {"auto", "fixed", "rotating"},
         "proxy_pool_probe_provider": {"cloudflare", "ipinfo"},
-        "proxy_protocol_backend": {"auto", "sing-box", "native-only"},
+        "proxy_protocol_backend": {"auto", "sing-box", "mihomo", "native-only"},
     }
     for key, allowed in enums.items():
         value = cfg.get(key, DEFAULT_CONFIG.get(key, ""))

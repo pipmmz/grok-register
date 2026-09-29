@@ -27,7 +27,7 @@ HTTP + auth / HTTPS proxy / SOCKS4 / SOCKS5
     → http://127.0.0.1:<port>
 
 VLESS / VMess / Trojan / Hysteria2 / TUIC / Shadowsocks
-    → sing-box
+    → sing-box / mihomo
     → http://127.0.0.1:<port>
 ```
 
@@ -68,6 +68,7 @@ Chromium / curl_cffi / Mail / NSFW / CPA OAuth / CPA Browser / Probe / Preflight
 
   "proxy_protocol_backend": "auto",
   "proxy_singbox_path": "",
+  "proxy_mihomo_path": "",
   "proxy_protocol_start_timeout_sec": 10,
   "proxy_runtime_idle_ttl_sec": 120,
   "proxy_runtime_cache_max": 32,
@@ -186,7 +187,18 @@ TUIC
 Shadowsocks / ss
 ```
 
-高级协议由 sing-box 按需转换成本机 HTTP endpoint。`proxy_singbox_path` 留空时从系统 `PATH` 查找 `sing-box`；项目不自动下载或更新它。
+高级协议由 sing-box 或 mihomo 按需转换成本机 HTTP endpoint。`proxy_protocol_backend` 决定用哪个核心：
+
+| 值 | 行为 |
+| --- | --- |
+| `auto` | 先找 `sing-box`（`proxy_singbox_path` 或 `PATH`），没有再用 `mihomo`（`proxy_mihomo_path` 或 `PATH`）。 |
+| `sing-box` | 只用 sing-box；缺失时报错。 |
+| `mihomo` | 只用 mihomo；缺失时报错。 |
+| `native-only` | 禁用高级协议，只保留原生 HTTP/HTTPS/SOCKS。 |
+
+两个核心都只暴露一个本地 HTTP 出口，行为对上层完全一致；区别只在生成的配置：sing-box 用 JSON（`sing-box run -c`），mihomo 用 Clash 配置（`mihomo -d <目录>`，目录里的 `config.yaml` 内容是 JSON，因为 YAML 是 JSON 的超集）。启动前会先做配置预检（`sing-box check` / `mihomo -t`），失败会记为该节点的 backend 错误并禁用该节点。
+
+`mihomo` 后端不支持 `quic` / `httpupgrade` transport，遇到这类节点会明确报错并提示改用 `proxy_protocol_backend=sing-box`，不会静默降级。`proxy_singbox_path` / `proxy_mihomo_path` 留空时从系统 `PATH` 查找；项目不自动下载或更新它们。
 
 Shadowsocks 支持常见 SIP002 / legacy Base64 URI；当前内置支持常见 AEAD / 2022 method，不支持的 plugin 或 method 会明确报错，不会静默降级。
 
@@ -224,7 +236,7 @@ SOCKS4 / SOCKS4A 同样分别保持 local / remote DNS 语义。
 
 ## Runtime idle cache
 
-Runtime 仍然按需创建，不会因为订阅里有大量节点就一次性启动大量 bridge / sing-box。
+Runtime 仍然按需创建，不会因为订阅里有大量节点就一次性启动大量 bridge / sing-box / mihomo。
 
 引用数降到 0 后默认进入 idle cache：
 
@@ -497,7 +509,7 @@ POST   /api/proxy-pool/nodes/enabled          {"canonical": "...", "enabled": fa
 POST   /api/proxy-pool/preflight?node_id=<node-id>
 ```
 
-节点增删改接口会写 JSON 清单并立即更新调度，返回最新快照；`proxy_mode` 不是 `pool` 时，添加节点会自动切换为 `pool` 并在 `notice` 字段说明。注册任务运行期间这些接口返回 409（与其它维护操作一致）。
+节点增删改接口会写 JSON 清单并立即更新调度,返回最新快照；`proxy_mode` 不是 `pool` 时，添加节点会自动切换为 `pool` 并在 `notice` 字段说明。注册任务运行期间这些接口返回 409（与其它维护操作一致）。接口的节点标识可以是原始 URI、canonical 或 node_id（WebUI 表格发的是 canonical；高级协议节点的 canonical 形如 `vless://<sha256>`，不是可解析的 URI）。
 
 项目当前本地使用模式下，WebUI、状态 API 和相关日志继续显示完整代理地址，包括认证信息。
 
@@ -505,4 +517,4 @@ POST   /api/proxy-pool/preflight?node_id=<node-id>
 
 本轮 V3 行为集中在 `single` / `pool` managed 模式。默认 `proxy_mode=auto` 继续保持旧 GUI/CLI/WebUI、邮箱、结果落盘、pending、token sync 与历史代理行为。
 
-普通 HTTP/SOCKS 不会因为高级协议支持而启动 sing-box；VLESS/VMess/Trojan/Hysteria2/TUIC/Shadowsocks 只有在实际 acquire / probe / preflight 时才需要 sing-box。
+普通 HTTP/SOCKS 不会因为高级协议支持而启动 sing-box 或 mihomo；VLESS/VMess/Trojan/Hysteria2/TUIC/Shadowsocks 只有在实际 acquire / probe / preflight 时才需要核心。
