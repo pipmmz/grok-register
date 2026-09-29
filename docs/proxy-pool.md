@@ -463,6 +463,8 @@ proxy_pool_preflight_enabled = false
 
 ## 持久化：节点清单与健康状态
 
+WebUI 只维护**一个代理池**：`proxy_pool_subscription_url` 解析出的节点会附加到池里，节点增删改（表格的「移除 / 恢复」、chips、「添加代理」）都在同一个池上完成；`proxy_pool_file` / `proxy_pool_store_file` / `proxy_pool_state_file` 属于高级/CLI 配置，**WebUI 不展示这些路径**（留空即用默认值）。
+
 代理池有两个 JSON 文件，职责分开：
 
 | 文件 | 内容 | 谁写 |

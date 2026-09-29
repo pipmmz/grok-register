@@ -15,11 +15,15 @@ class WebUIStaticTests(unittest.TestCase):
         cls.form_sources = cls.html + "\n" + cls.proxy_js
 
     def test_all_config_keys_are_exposed_by_web_form(self):
-        # 旧节点清单键已废弃(仅在节点清单 JSON 首次创建时导入),不再需要表单字段。
-        deprecated = {"proxy_pool_manual_entries", "proxy_pool_disabled_nodes"}
+        # 已废弃键只在节点清单 JSON 首次创建时迁移一次;路径类键属于高级/CLI 配置:
+        # WebUI 只维护"一个代理池",不展示 proxy_pool_file / proxy_pool_store_file / proxy_pool_state_file。
+        not_in_form = {
+            "proxy_pool_manual_entries", "proxy_pool_disabled_nodes",
+            "proxy_pool_file", "proxy_pool_store_file", "proxy_pool_state_file",
+        }
         missing = [
             key for key in DEFAULT_CONFIG
-            if key not in deprecated and ("'" + key + "'") not in self.form_sources
+            if key not in not_in_form and ("'" + key + "'") not in self.form_sources
         ]
         self.assertEqual(missing, [], "WebUI missing config fields: %s" % missing)
 
@@ -66,7 +70,7 @@ class WebUIStaticTests(unittest.TestCase):
 
     def test_proxy_pool_extension_has_status_and_controls(self):
         for marker in (
-            "proxy_pool_file", "proxy_pool_subscription_url", "proxy_pool_endpoint_mode",
+            "proxy_pool_subscription_url", "proxy_pool_endpoint_mode",
             "/api/proxy-pool/status", "/api/proxy-pool/reload", "/api/proxy-pool/test",
             "proxyPoolRows", "proxy_pool_max_concurrent_per_node",
             "proxy_protocol_backend", "proxy_singbox_path", "proxy_protocol_start_timeout_sec",
@@ -74,6 +78,9 @@ class WebUIStaticTests(unittest.TestCase):
             "VLESS/VMess/Trojan/Hysteria2/TUIC",
         ):
             self.assertIn(marker, self.proxy_js)
+        # 路径类键只在 config.json / CLI 配置,WebUI 只维护一个代理池,不展示这些字段
+        for hidden in ("proxy_pool_file", "proxy_pool_store_file", "proxy_pool_state_file"):
+            self.assertNotIn("'" + hidden + "'", self.proxy_js)
         self.assertIn(".proxy-table", self.proxy_css)
 
     def test_responsive_breakpoints_exist(self):

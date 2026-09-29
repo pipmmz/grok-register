@@ -6,7 +6,6 @@
     ['proxy','text','full'],
     ['proxy_fallback','select',['none','direct','single']],
     ['proxy_pool_endpoint_mode','select',['auto','fixed','rotating']],
-    ['proxy_pool_file','text','full'],
     ['proxy_pool_subscription_url','text','full'],
     ['proxy_pool_subscription_proxy','text','full'],
     ['proxy_pool_refresh_interval_sec','number',{min:0,max:86400}],
@@ -23,8 +22,6 @@
     ['proxy_runtime_idle_ttl_sec','number',{min:0,max:3600}],
     ['proxy_runtime_cache_max','number',{min:1,max:256}],
     ['proxy_pool_persist_health','checkbox'],
-    ['proxy_pool_state_file','text','full'],
-    ['proxy_pool_store_file','text','full'],
     ['proxy_pool_subscription_public_only','checkbox'],
     ['proxy_pool_preflight_enabled','checkbox'],
   ];
@@ -41,7 +38,7 @@
     proxyRestore:'恢复', proxyManualPlaceholder:'http://user:pass@host:port 或 vless://… 支持任意受支持协议',
     proxyNoneRemoved:'无', proxyAddEmpty:'请先填写代理地址', proxyAdded:'已加入代理池',
     proxyDisabled:'已禁用（可从左侧恢复）', proxyAddFailed:'添加失败', proxyEnableAll:'正在恢复节点…',
-    proxyStoreHint:'节点清单文件', proxySrcSubscription:'订阅', proxySrcFile:'文件', proxySrcManual:'清单', proxySrcSingle:'单代理',
+    proxySrcSubscription:'订阅', proxySrcFile:'文件', proxySrcManual:'清单', proxySrcSingle:'单代理',
     proxyConfigPending:'配置变更待生效(有代理租约占用,释放后自动生效)',
     proxyLegacyRemoved:'旧配置键过滤', proxyLegacyHint:'来自 config.json 的 proxy_pool_disabled_nodes(已废弃):这些节点被它过滤掉了,清空该键即可恢复',
   };
@@ -57,7 +54,7 @@
     proxyRestore:'Restore', proxyManualPlaceholder:'http://user:pass@host:port or vless://… any supported protocol',
     proxyNoneRemoved:'none', proxyAddEmpty:'Enter a proxy address first', proxyAdded:'Added to the proxy pool',
     proxyDisabled:'Disabled (restore it from the left)', proxyAddFailed:'Add failed', proxyEnableAll:'Restoring nodes…',
-    proxyStoreHint:'Node list file', proxySrcSubscription:'sub', proxySrcFile:'file', proxySrcManual:'list', proxySrcSingle:'single',
+    proxySrcSubscription:'sub', proxySrcFile:'file', proxySrcManual:'list', proxySrcSingle:'single',
     proxyConfigPending:'Config change pending (leases in use; applies automatically)',
     proxyLegacyRemoved:'filtered by legacy key', proxyLegacyHint:'From config.json proxy_pool_disabled_nodes (deprecated): these nodes are filtered by it; clear that key to restore them',
   };
@@ -67,8 +64,7 @@
     proxy:['固定代理 / 单代理','auto 兼容旧代理；single 模式或 single fallback 使用。'],
     proxy_fallback:['代理池回退','none / direct / single。只在新账号租约获取前回退。'],
     proxy_pool_endpoint_mode:['节点类型','auto 会将含 {account} 的原生代理地址视为旋转代理入口。'],
-    proxy_pool_file:['代理池文件','本地文件路径，支持 HTTP/HTTPS/SOCKS/VLESS/VMess/Trojan/Hysteria2/TUIC/Shadowsocks 以及整份 Base64 文本。HTTP 订阅链接请填「代理订阅 URL」，不要填在这里。'],
-    proxy_pool_subscription_url:['代理订阅 URL','支持普通文本或整份 Base64 编码的多协议节点订阅；刷新失败保留最近一次成功节点。'],
+    proxy_pool_subscription_url:['代理订阅 URL','填订阅链接即可：支持普通文本或整份 Base64 编码的多协议节点订阅，解析出的节点会附加到下面的代理池；刷新失败保留最近一次成功节点。'],
     proxy_pool_subscription_proxy:['订阅拉取代理','仅用于下载代理订阅，只接受 HTTP/HTTPS/SOCKS，可留空。'],
     proxy_pool_refresh_interval_sec:['订阅刷新间隔（秒）','0 表示关闭自动刷新。'],
     proxy_pool_probe_interval_sec:['健康探测间隔（秒）','0 表示关闭定期探测。探测状态与运行健康分相互独立。'],
@@ -84,8 +80,6 @@
     proxy_runtime_idle_ttl_sec:['运行时空闲缓存（秒）','引用数归零后继续保留一段时间，避免重复启动 bridge / sing-box；0 表示立即关闭。'],
     proxy_runtime_cache_max:['运行时缓存上限','空闲运行时超过上限时优先清理最久未使用项。'],
     proxy_pool_persist_health:['持久化代理健康','把固定节点的业务健康统计保存到本地 JSON。'],
-    proxy_pool_state_file:['健康状态文件','仅在启用健康持久化时使用。'],
-    proxy_pool_store_file:['代理池节点清单','节点清单 JSON：WebUI 添加/移除的节点与启用状态都写在这里，改动立即生效，可直接手工编辑。'],
     proxy_pool_subscription_public_only:['订阅仅允许公网','启用后拒绝解析到私网/回环/保留地址的订阅 URL 和重定向。'],
     proxy_pool_preflight_enabled:['注册路径预检','保留非破坏性的 accounts.x.ai / grok.com 可达性预检能力。'],
   });
@@ -94,8 +88,7 @@
     proxy:['Fixed / single proxy','Used by legacy auto mode, single mode, or single fallback.'],
     proxy_fallback:['Pool fallback','none / direct / single; applied only before a new account lease starts.'],
     proxy_pool_endpoint_mode:['Endpoint type','auto treats native URLs containing {account} as rotating gateways.'],
-    proxy_pool_file:['Proxy pool file','Local file path: plain or Base64-encoded HTTP/HTTPS/SOCKS/VLESS/VMess/Trojan/Hysteria2/TUIC/Shadowsocks nodes. HTTP subscription links belong in "Subscription URL", not here.'],
-    proxy_pool_subscription_url:['Subscription URL','Plain/Base64 multi-protocol source; failed refreshes retain last-known-good nodes.'],
+    proxy_pool_subscription_url:['Subscription URL','Paste a subscription link: plain or Base64 multi-protocol nodes are appended to the pool below; failed refreshes retain last-known-good nodes.'],
     proxy_pool_subscription_proxy:['Subscription fetch proxy','Used only to download the subscription; HTTP/HTTPS/SOCKS only.'],
     proxy_pool_refresh_interval_sec:['Refresh interval (seconds)','0 disables automatic source refresh.'],
     proxy_pool_probe_interval_sec:['Probe interval (seconds)','0 disables periodic probes. Probe status is independent from runtime health.'],
@@ -111,8 +104,6 @@
     proxy_runtime_idle_ttl_sec:['Runtime idle TTL','Keep idle bridge/sing-box runtimes for reuse; 0 closes immediately.'],
     proxy_runtime_cache_max:['Runtime cache limit','Evict oldest idle runtimes after this limit.'],
     proxy_pool_persist_health:['Persist proxy health','Persist fixed-node business health to local JSON.'],
-    proxy_pool_state_file:['Health state file','Used only when health persistence is enabled.'],
-    proxy_pool_store_file:['Pool node list','Node-list JSON: nodes added/removed in the WebUI and their enabled flags live here; changes apply immediately and the file can be edited by hand.'],
     proxy_pool_subscription_public_only:['Public-only subscription','Reject subscription URLs/redirects resolving to private, loopback or reserved addresses.'],
     proxy_pool_preflight_enabled:['Registration preflight','Keep non-destructive accounts.x.ai / grok.com path preflight available.'],
   });
@@ -193,7 +184,7 @@
     const rows = document.getElementById('proxyPoolRows'); const summary = document.getElementById('proxyPoolSummary'); if (!rows || !summary) return;
     lastStatus = data || {};
     const nodes = Array.isArray(data.nodes) ? data.nodes : []; const store = (data && data.store) || {};
-    const storeText = store.total ? ` · ${t('proxyStoreHint')}: ${store.total}${store.disabled ? ` · ${store.disabled} ${t('proxyDisabled')}` : ''}` : '';
+    const storeText = store.disabled ? ` · ${store.disabled} ${t('proxyDisabled')}` : '';
     const sourceErrors = Object.entries(data.sources || {}).filter(([, source]) => source && source.error).map(([key, source]) => `${key}: ${source.error}`);
     const legacyText = legacyDisabledEntries(data).length ? ` · ${t('proxyLegacyRemoved')}: ${legacyDisabledEntries(data).length}` : '';
     summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}${storeText}${legacyText}${data.error ? ' · ' + data.error : ''}${sourceErrors.length ? ' · ' + sourceErrors.join(' | ') : ''}${data.config_pending ? ' · ' + t('proxyConfigPending') : ''}`;

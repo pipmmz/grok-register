@@ -255,7 +255,7 @@ The project performs structural validation at startup and checks fields required
 | `user_agent` | User-Agent used by Chromium and HTTP requests |
 | `proxy_mode` | `auto` / `direct` / `single` / `pool` |
 | `proxy` | Single proxy address; in `auto` mode, leave empty for a direct connection |
-| `proxy_pool_store_file` | Proxy-pool node-list JSON (default `./proxy_pool.json`); nodes added/removed in the WebUI and their enabled flags live here and apply immediately |
+| `proxy_pool_store_file` | Proxy-pool node-list JSON (default `./proxy_pool.json`); nodes added/removed in the WebUI and their enabled flags live here and apply immediately (the WebUI does not show this path; it is an advanced/CLI setting) |
 | `proxy_pool_manual_entries` | Deprecated: imported once when the node-list JSON is first created |
 | `proxy_pool_disabled_nodes` | Deprecated: imported once as block overrides when the node-list JSON is first created |
 | `multi_thread_enabled` | Whether concurrent registration is enabled; default `false` |
@@ -422,6 +422,8 @@ Native proxy:
 ```
 
 Adding or removing a single node no longer means editing `config.json`: "Add proxy" on the WebUI proxy-pool page writes the node into `proxy_pool_store_file` (default `./proxy_pool.json`) and it joins scheduling immediately, while the per-row Remove / Restore buttons flip the enabled flag in that same JSON; when `proxy_mode` is not `pool` the mode is switched automatically and reported. Reload / Test nodes behave the same way when a subscription or pool file is configured, and report an error instead of silently returning an empty pool otherwise. The node-list file can be edited by hand; `proxy_pool_manual_entries` / `proxy_pool_disabled_nodes` are deprecated (imported once when that JSON is first created).
+
+The WebUI maintains **one proxy pool**: paste a "Subscription URL" and the parsed nodes are **appended** to that pool (subscription nodes can be removed/restored from the table like any other), and every node add/remove/restore happens on that same pool. Path settings (`proxy_pool_file`, `proxy_pool_store_file`, `proxy_pool_state_file`) are `config.json` / CLI only and are not shown in the WebUI.
 
 Proxy sources can be plain text or an entire Base64-encoded document. After decoding, they may contain mixed protocols:
 

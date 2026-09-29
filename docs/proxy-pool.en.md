@@ -461,6 +461,8 @@ proxy_pool_preflight_enabled = false
 
 ## Persistence: Node List and Health State
 
+The WebUI maintains **one proxy pool**: nodes parsed from `proxy_pool_subscription_url` are appended to it, and every node add/remove/restore (table buttons, chips, "Add proxy") happens on that same pool. `proxy_pool_file`, `proxy_pool_store_file` and `proxy_pool_state_file` are advanced/CLI settings and are **not shown in the WebUI** (leave them unset to use the defaults).
+
 The pool uses two JSON files with separate duties:
 
 | File | Content | Written by |
