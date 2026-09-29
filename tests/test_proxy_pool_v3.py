@@ -103,6 +103,21 @@ class ProxyPoolV3Tests(unittest.TestCase):
             self.assertEqual(node["business_samples"], 1)
             restored.shutdown()
 
+    def test_pool_file_rejects_subscription_url(self):
+        """把订阅 URL 填进代理池文件(本地路径)时要给出明确提示。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self.cfg(
+                proxy_mode="pool", proxy_pool_file="http://127.0.0.1:10808",
+                proxy_pool_store_file=os.path.join(tmp, "proxy_pool.json"), proxy_pool_probe_interval_sec=0,
+            )
+            manager = ProxyPoolManager(cfg)
+            try:
+                error = manager.snapshot()["error"]
+                self.assertIn("代理池文件应为本地路径", error)
+                self.assertIn("proxy_pool_subscription_url", error)
+            finally:
+                manager.shutdown()
+
     def test_config_change_while_leases_are_held_is_flagged_and_applied_later(self):
         """租约占用期间配置变更不能静默丢弃:标记待生效,租约释放后自动重建。"""
         import proxy_pool

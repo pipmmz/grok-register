@@ -428,6 +428,9 @@ class ProxyPoolManager:
         path = str(self.config.get("proxy_pool_file") or "").strip()
         if not path:
             return None
+        if path.lower().startswith(("http://", "https://")):
+            # 常见配置错误:把订阅 URL 填进了代理池文件(本地路径)。
+            raise ProxyPoolError("代理池文件应为本地路径,HTTP 订阅请填 proxy_pool_subscription_url")
         path = os.path.expanduser(path)
         if not os.path.isabs(path):
             path = os.path.join(_ROOT, path)
