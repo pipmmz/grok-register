@@ -171,11 +171,18 @@ def _feedback_from_output(account, output):
 def _rotate_proxy_lease(error, callbacks):
     """取码失败后冷却当前出口并换一个新租约；未启用代理租约时返回 False。
 
+    只有 pool 模式才换:single 模式只有一个固定代理,换租约拿到的还是同一个出口,
+    冷却它还会让下一次尝试白等,所以只换邮箱、不动代理。
+
     冷却与换租约失败都会抛出：调用方结束本次 attempt，由上层重新获取租约，
     不会在“已释放旧租约但没拿到新租约”的状态下继续跑注册流程。
     """
     lease = current_proxy_lease()
     if lease is None:
+        return False
+    mode = str(app_config.get("proxy_mode") or "auto").strip().lower()
+    if mode != "pool":
+        callbacks.log(f"[*] 代理模式是 {mode or 'auto'}，不切换代理，只更换邮箱")
         return False
     report_current_code_wait_failure(error)
     slot_index = int(getattr(lease, "slot_index", 1) or 1)
@@ -222,12 +229,13 @@ def register_one_account(callbacks, ops, enable_nsfw=True, max_mail_retry=3):
             break
         except VerificationCodeUnavailable as exc:
             if mail_try < max_mail_retry:
-                callbacks.log(f"[!] 本邮箱在等待阶段未取到验证码，更换邮箱并更换代理后重试: {exc}")
                 # Keep the code_wait disposition while recovering. If browser
                 # restart itself fails, the outer retry engine must not treat
                 # this as a safe point for acquiring a different proxy lease.
                 _set_registration_stage(STAGE_CODE_WAIT)
-                _rotate_proxy_lease(exc, callbacks)
+                rotated = _rotate_proxy_lease(exc, callbacks)
+                detail = "更换邮箱并更换代理后重试" if rotated else "更换邮箱后重试（保持当前代理）"
+                callbacks.log(f"[!] 本邮箱在等待阶段未取到验证码，{detail}: {exc}")
                 ops.restart_browser()
                 ops.sleep(1)
                 continue

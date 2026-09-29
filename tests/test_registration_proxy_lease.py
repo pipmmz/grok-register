@@ -62,7 +62,8 @@ class RegistrationProxyLeaseTests(unittest.TestCase):
 
         return state, begin, end
 
-    def test_code_wait_failure_switches_mailbox_and_proxy(self):
+    def test_single_mode_code_wait_failure_keeps_the_same_proxy(self):
+        """single 模式只有一个固定代理:取码失败只换邮箱,不换代理、也不冷却它。"""
         state = {"browser": False, "restarts": 0, "code_calls": 0}
         callbacks = RegistrationCallbacks(log=lambda _message: None, cancelled=lambda: False)
         lease, begin, end = self._lease_spy()
@@ -86,11 +87,40 @@ class RegistrationProxyLeaseTests(unittest.TestCase):
             )
 
         self.assertEqual(result.success_count, 1)
+        self.assertEqual(state["code_calls"], 2, "取码失败后仍要换邮箱重试")
+        self.assertEqual([call["attempt_index"] for call in lease["begins"]], [1], "single 模式不换租约")
+        self.assertEqual(cooled, [], "single 模式不冷却唯一的代理")
+        self.assertEqual(state["restarts"], 1)
+
+    def test_pool_mode_code_wait_failure_switches_mailbox_and_proxy(self):
+        state = {"browser": False, "restarts": 0, "code_calls": 0}
+        callbacks = RegistrationCallbacks(log=lambda _message: None, cancelled=lambda: False)
+        lease, begin, end = self._lease_spy()
+        cooled = []
+        fake_lease = type("Lease", (), {"slot_index": 1, "attempt_index": 1, "worker_key": "w"})()
+
+        with patch.dict(registration_flow.app_config, {"proxy_mode": "pool"}, clear=False), patch(
+            "registration_flow.begin_registration_slot", side_effect=begin
+        ), patch("registration_flow.end_registration_slot", side_effect=end), patch(
+            "registration_flow.current_proxy_lease", return_value=fake_lease
+        ), patch(
+            "registration_flow.report_current_code_wait_failure", side_effect=cooled.append
+        ):
+            result = run_batch(
+                count=1,
+                callbacks=callbacks,
+                observer=lambda *_args: None,
+                ops=self._ops(state),
+                enable_nsfw=True,
+                max_mail_retry=2,
+            )
+
+        self.assertEqual(result.success_count, 1)
         self.assertEqual(state["code_calls"], 2, "取码失败后要换邮箱重试")
         self.assertEqual(
             [call["attempt_index"] for call in lease["begins"]],
             [1, 2],
-            "取码失败后要冷却当前出口并换一个新租约",
+            "pool 模式下取码失败要冷却当前出口并换一个新租约",
         )
         self.assertEqual(len(cooled), 1)
         self.assertIsInstance(cooled[0], VerificationCodeUnavailable)
