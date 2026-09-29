@@ -197,6 +197,20 @@ class ProxyPoolNodesWebTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("未配置任何来源", response.json()["detail"])
 
+    def test_reload_reports_when_a_lease_blocks_the_config_change(self):
+        """有租约占用时无法重建 Manager:重新加载要明确报错,不能静默沿用旧配置。"""
+        import proxy_pool
+        self.client.post("/api/proxy-pool/nodes", json={"uri": "http://127.0.0.1:8001"})
+        manager = proxy_pool.get_manager()
+        lease = manager.acquire("a", "w", 1, 1, "s", timeout=1)
+        try:
+            self._apply_config({"proxy_pool_subscription_url": "http://sub.test/list"})
+            response = self.client.post("/api/proxy-pool/reload")
+            self.assertEqual(response.status_code, 409)
+            self.assertIn("租约", response.json()["detail"])
+        finally:
+            manager.release(lease)
+
     def test_node_endpoints_are_rejected_while_a_job_runs(self):
         with self.server._job_lock:
             self.server._job_state["running"] = True

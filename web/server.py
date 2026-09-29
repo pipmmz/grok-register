@@ -320,6 +320,16 @@ def _activate_pool_sources(cfg: dict[str, Any]) -> str:
     return "代理模式已切换为 pool"
 
 
+def _require_applied_pool_config(manager: Any) -> None:
+    """配置已变更但还有租约占用时无法重建 Manager:明确报错,而不是静默沿用旧配置。"""
+    if not getattr(manager, "config_pending", False):
+        return
+    raise HTTPException(
+        status_code=409,
+        detail="代理池配置已变更,但仍有 %s 个代理租约在使用,暂时无法重建;租约释放后会自动生效" % manager.total_inflight(),
+    )
+
+
 @app.get("/api/proxy-pool/status")
 def proxy_pool_status():
     from proxy_pool import manager_snapshot
@@ -338,6 +348,7 @@ def proxy_pool_reload():
             cfg = engine.validate_config_structure(dict(engine.config))
             notice = _activate_pool_sources(cfg)
             manager = get_manager(config=cfg, log=_append_log)
+            _require_applied_pool_config(manager)
             snapshot = manager.reload_sources(force=True)
         except HTTPException:
             raise
@@ -360,6 +371,7 @@ def proxy_pool_test():
             cfg = engine.validate_config_structure(dict(engine.config))
             notice = _activate_pool_sources(cfg)
             manager = get_manager(config=cfg, log=_append_log)
+            _require_applied_pool_config(manager)
             manager.reload_sources(force=True)
             results = manager.probe_all(force=True)
         except HTTPException:

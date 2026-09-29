@@ -318,6 +318,7 @@ class ProxyPoolManager:
         self.store = ProxyPoolStore(self.store_path, log=self.log)
         self._store_ready = False
         self._assembly_error = ""
+        self.config_pending = False
         self._local_stamp = None
         self._runtime = ProtocolRuntimeManager(self.config, log=self.log)
         try:
@@ -1245,7 +1246,7 @@ class ProxyPoolManager:
                 store.update({key: summary[key] for key in ("total", "disabled", "user_nodes", "nodes")})
             except ProxyPoolStoreError as exc:
                 store["error"] = str(exc)
-            return {"mode": self.mode, "managed": self.managed, "fallback": self.fallback, "capacity": self.capacity, "nodes": nodes, "sources": dict(self._source_diagnostics), "runtime": self._runtime.active_snapshot(), "persist_health": self.persist_health, "store": store, "error": self._assembly_error}
+            return {"mode": self.mode, "managed": self.managed, "fallback": self.fallback, "capacity": self.capacity, "nodes": nodes, "sources": dict(self._source_diagnostics), "runtime": self._runtime.active_snapshot(), "persist_health": self.persist_health, "store": store, "error": self._assembly_error, "config_pending": bool(self.config_pending)}
 
 
 def get_manager(config=None, log=None):
@@ -1257,9 +1258,14 @@ def get_manager(config=None, log=None):
     with _MANAGER_LOCK:
         if _MANAGER is None:
             _MANAGER = ProxyPoolManager(config, log=log)
-        elif _MANAGER.signature != signature and _MANAGER.total_inflight() == 0:
-            old = _MANAGER; _MANAGER = ProxyPoolManager(config, log=log); old.shutdown()
-        elif log is not None:
+        elif _MANAGER.signature != signature:
+            if _MANAGER.total_inflight() == 0:
+                old = _MANAGER; _MANAGER = ProxyPoolManager(config, log=log); old.shutdown()
+            else:
+                # 有租约在使用:不能中途换 Manager,但也不能静默丢掉这次配置变更。
+                # 标记待生效,租约释放后的下一次 get_manager 会自动重建。
+                _MANAGER.config_pending = True
+        if log is not None:
             _MANAGER.log = log; _MANAGER._runtime.log = log
         return _MANAGER
 

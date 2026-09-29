@@ -42,6 +42,7 @@
     proxyNoneRemoved:'无', proxyAddEmpty:'请先填写代理地址', proxyAdded:'已加入代理池',
     proxyDisabled:'已禁用（可从左侧恢复）', proxyAddFailed:'添加失败', proxyEnableAll:'正在恢复节点…',
     proxyStoreHint:'节点清单文件', proxySrcSubscription:'订阅', proxySrcFile:'文件', proxySrcManual:'清单', proxySrcSingle:'单代理',
+    proxyConfigPending:'配置变更待生效(有代理租约占用,释放后自动生效)',
   };
   const en = {
     tabProxy:'Proxy pool', proxyReload:'Reload', proxyTest:'Test nodes', proxyStatus:'Proxy node status',
@@ -56,6 +57,7 @@
     proxyNoneRemoved:'none', proxyAddEmpty:'Enter a proxy address first', proxyAdded:'Added to the proxy pool',
     proxyDisabled:'Disabled (restore it from the left)', proxyAddFailed:'Add failed', proxyEnableAll:'Restoring nodes…',
     proxyStoreHint:'Node list file', proxySrcSubscription:'sub', proxySrcFile:'file', proxySrcManual:'list', proxySrcSingle:'single',
+    proxyConfigPending:'Config change pending (leases in use; applies automatically)',
   };
   Object.assign(i18n.zh, zh); Object.assign(i18n.en, en);
   Object.assign(i18n.zh.fields, {
@@ -190,7 +192,8 @@
     lastStatus = data || {};
     const nodes = Array.isArray(data.nodes) ? data.nodes : []; const store = (data && data.store) || {};
     const storeText = store.total ? ` · ${t('proxyStoreHint')}: ${store.total}${store.disabled ? ` · ${store.disabled} ${t('proxyDisabled')}` : ''}` : '';
-    summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}${storeText}${data.error ? ' · ' + data.error : ''}`;
+    const sourceErrors = Object.entries(data.sources || {}).filter(([, source]) => source && source.error).map(([key, source]) => `${key}: ${source.error}`);
+    summary.textContent = `${data.mode || 'auto'} · ${nodes.length} nodes${data.persist_health ? ' · persisted health' : ''}${storeText}${data.error ? ' · ' + data.error : ''}${sourceErrors.length ? ' · ' + sourceErrors.join(' | ') : ''}${data.config_pending ? ' · ' + t('proxyConfigPending') : ''}`;
     renderSourceSummary(data); renderDisabledList(data);
     if (!nodes.length) { rows.innerHTML = `<tr><td colspan="14" class="proxy-empty">${esc(t('proxyEmpty'))}</td></tr>`; return; }
     rows.innerHTML = nodes.map(node => {
